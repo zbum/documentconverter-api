@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: documentconverter-api-config
+  namespace: documentconverter
+  labels:
+    app.kubernetes.io/name: documentconverter-api
+data:
+  SPRING_PROFILES_ACTIVE: "kubernetes"
+  JAVA_OPTS: "-Xmx512m -Xms256m"

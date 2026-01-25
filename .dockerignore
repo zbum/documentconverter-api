@@ -1,0 +1,10 @@
+target/
+!target/*.jar
+.git/
+.gitignore
+.idea/
+*.iml
+*.md
+docker-compose.yml
+k8s/
+.sdkmanrc
