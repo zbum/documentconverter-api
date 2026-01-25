@@ -17,8 +17,8 @@ spec:
     spec:
       containers:
         - name: documentconverter-api
-          image: documentconverter-api:latest
-          imagePullPolicy: IfNotPresent
+          image: registry.manty.co.kr/documentconverter-api:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               protocol: TCP

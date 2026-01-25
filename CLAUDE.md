@@ -109,6 +109,37 @@ pipeline {
 
 - 기본 레지스트리: `registry.manty.co.kr`
 
+## Kubernetes 배포 규칙
+
+### Jenkinsfile과 K8s 이미지 일관성
+
+**중요**: Jenkinsfile의 `DOCKER_REGISTRY`와 K8s `deployment.yaml`의 이미지 경로는 반드시 일치해야 합니다.
+
+| 파일 | 설정 |
+|-----|------|
+| Jenkinsfile | `DOCKER_REGISTRY = 'registry.manty.co.kr'` |
+| k8s/deployment.yaml | `image: registry.manty.co.kr/프로젝트명:latest` |
+
+### K8s Deployment 작성 규칙
+
+```yaml
+spec:
+  template:
+    spec:
+      containers:
+        - name: 프로젝트명
+          image: registry.manty.co.kr/프로젝트명:latest
+          imagePullPolicy: Always  # 외부 레지스트리 사용 시 Always
+```
+
+### 체크리스트
+
+Jenkinsfile 또는 K8s 리소스 생성 시 확인사항:
+
+- [ ] Jenkinsfile `DOCKER_REGISTRY` 값 확인
+- [ ] k8s/deployment.yaml `image` 경로가 동일한 레지스트리 사용
+- [ ] `imagePullPolicy: Always` 설정 (외부 레지스트리)
+
 ## 빌드 명령
 
 ```bash
