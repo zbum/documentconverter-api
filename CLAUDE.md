@@ -24,7 +24,7 @@ pipeline {
 
     tools {
         // 언어별 tool 설정
-        // Java: jdk 'jdk-25'
+        // Java: jdk 'JDK25'
         // Go: go 'go-1.25'
     }
 

@@ -177,7 +177,7 @@ kubectl delete -f k8s/
    - `kubeconfig`: Kubernetes 설정 파일 (file)
 
 3. **Jenkins Tools**
-   - JDK: `jdk-25`
+   - JDK: `JDK25`
 
 ### 파이프라인 단계
 
