@@ -77,8 +77,9 @@ pipeline {
                         # 이미지 태그를 빌드 번호로 업데이트
                         sed -i 's|image: ${DOCKER_REGISTRY}/${IMAGE_NAME}:.*|image: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}|' k8s/deployment.yaml
 
-                        # Kubernetes 리소스 적용
+                        # Kubernetes 리소스 적용 (순서 중요!)
                         kubectl apply -f k8s/namespace.yaml
+                        kubectl apply -f k8s/configmap.yaml
                         kubectl apply -f k8s/deployment.yaml
                         kubectl apply -f k8s/service.yaml
                         kubectl apply -f k8s/ingress.yaml
@@ -132,6 +133,16 @@ spec:
           imagePullPolicy: Always  # 외부 레지스트리 사용 시 Always
 ```
 
+### K8s 리소스 배포 순서
+
+ConfigMap, Secret 등은 Deployment보다 **먼저** 배포되어야 합니다:
+
+1. `namespace.yaml`
+2. `configmap.yaml` (Deployment에서 참조)
+3. `deployment.yaml`
+4. `service.yaml`
+5. `ingress.yaml`
+
 ### 체크리스트
 
 Jenkinsfile 또는 K8s 리소스 생성 시 확인사항:
@@ -139,6 +150,7 @@ Jenkinsfile 또는 K8s 리소스 생성 시 확인사항:
 - [ ] Jenkinsfile `DOCKER_REGISTRY` 값 확인
 - [ ] k8s/deployment.yaml `image` 경로가 동일한 레지스트리 사용
 - [ ] `imagePullPolicy: Always` 설정 (외부 레지스트리)
+- [ ] ConfigMap/Secret이 Deployment보다 먼저 배포되는지 확인
 
 ## 빌드 명령
 
