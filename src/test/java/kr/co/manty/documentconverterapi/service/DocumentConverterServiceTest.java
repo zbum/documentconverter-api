@@ -14,12 +14,18 @@ import kr.dogfoot.hwplib.reader.HWPReader;
 import org.junit.jupiter.api.Test;
 
 import javax.imageio.ImageIO;
+import javax.xml.parsers.DocumentBuilderFactory;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -172,6 +178,63 @@ class DocumentConverterServiceTest {
         }
     }
 
+    @Test
+    void markdownToHwpxUsesStyledMarkdownPipeline() throws Exception {
+        Path imagePath = Files.createTempFile("markdown-hwpx-image", ".png");
+        try {
+            BufferedImage image = new BufferedImage(8, 4, BufferedImage.TYPE_INT_RGB);
+            ImageIO.write(image, "png", imagePath.toFile());
+
+            byte[] hwpxBytes = service.markdownToHwpx("""
+                    # 제목
+
+                    * 첫 항목
+                    * 둘째 항목
+
+                    ```go
+                    func main() {
+                        println("hello")
+                    }
+                    ```
+
+                    ![샘플](%s)
+                    """.formatted(imagePath.toUri()));
+            String sectionXml = zipEntryText(hwpxBytes, "Contents/section0.xml");
+            String headerXml = zipEntryText(hwpxBytes, "Contents/header.xml");
+            String contentHpf = zipEntryText(hwpxBytes, "Contents/content.hpf");
+
+            assertWellFormedXml(sectionXml);
+            assertWellFormedXml(headerXml);
+            assertWellFormedXml(contentHpf);
+            assertThat(sectionXml)
+                    .contains("<hp:tbl")
+                    .contains("<hp:lineBreak/>")
+                    .doesNotContain("\u241E");
+            assertThat(headerXml)
+                    .contains("<hh:bullets")
+                    .contains("type=\"BULLET\"");
+            assertThat(sectionXml)
+                    .contains("첫 항목")
+                    .contains("둘째 항목")
+                    .doesNotContain("> - 첫 항목")
+                    .doesNotContain("> - 둘째 항목")
+                    .doesNotContain("> * 첫 항목")
+                    .doesNotContain("> * 둘째 항목");
+            assertThat(sectionXml)
+                    .contains("<hp:pic")
+                    .contains("binaryItemIDRef=\"image1\"")
+                    .doesNotContain(MarkdownDocumentPreProcessor.MARKDOWN_IMAGE_MARKER_PREFIX)
+                    .doesNotContain("[샘플]");
+            assertThat(contentHpf)
+                    .contains("id=\"image1\"")
+                    .contains("href=\"BinData/image1.png\"")
+                    .contains("media-type=\"image/png\"");
+            assertThat(zipHasEntry(hwpxBytes, "BinData/image1.png")).isTrue();
+        } finally {
+            Files.deleteIfExists(imagePath);
+        }
+    }
+
     private long charShapeId(Paragraph paragraph) {
         return paragraph.getCharShape().getPositonShapeIdPairList().getFirst().getShapeId();
     }
@@ -228,6 +291,40 @@ class DocumentConverterServiceTest {
             text.append(normalString(paragraph));
         }
         return text.toString();
+    }
+
+    private String zipEntryText(byte[] zipBytes, String entryName) throws IOException {
+        return new String(zipEntryBytes(zipBytes, entryName), StandardCharsets.UTF_8);
+    }
+
+    private void assertWellFormedXml(String xml) throws Exception {
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(true);
+        factory.newDocumentBuilder().parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private boolean zipHasEntry(byte[] zipBytes, String entryName) throws IOException {
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (entryName.equals(entry.getName())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private byte[] zipEntryBytes(byte[] zipBytes, String entryName) throws IOException {
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (entryName.equals(entry.getName())) {
+                    return zis.readAllBytes();
+                }
+            }
+        }
+        throw new AssertionError("ZIP entry not found: " + entryName);
     }
 
     private String cellText(Cell cell) {
