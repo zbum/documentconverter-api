@@ -55,12 +55,12 @@ curl -X POST http://localhost:8080/api/convert/markdown-to-hwp \
   --output document.hwp
 ```
 
-Markdown → HWP 변환은 다음 Markdown 서식을 HWP 문서 객체로 보정합니다.
+Markdown → HWP/HWPX 변환은 다음 Markdown 서식을 문서 객체로 보정한 뒤 파일을 생성합니다.
 
-- `#`, `##`, `###` 제목은 서로 다른 HWP 글자 스타일로 적용
-- `*` 글머리 목록은 HWP 글머리표로 변환
+- `#`, `##`, `###` 제목은 서로 다른 글자 스타일로 적용
+- `*` 글머리 목록은 글머리표로 변환
 - fenced code block은 1x1 표로 변환하고 긴 줄은 폭에 맞춰 줄바꿈
-- Markdown 이미지(`![alt](url 또는 file URI)`)는 다운로드 또는 로컬 파일 읽기 후 HWP 그림으로 삽입
+- Markdown 이미지(`![alt](url 또는 file URI)`)는 다운로드 또는 로컬 파일 읽기 후 그림으로 삽입
 
 ### HWP → Markdown 변환
 
@@ -210,7 +210,8 @@ documentconverter-api/
 │       │   └── service/
 │       │       ├── DocumentConverterService.java
 │       │       ├── MarkdownDocumentPreProcessor.java
-│       │       └── HwpDocumentPostProcessor.java
+│       │       ├── HwpDocumentPostProcessor.java
+│       │       └── HwpxDocumentPostProcessor.java
 │       └── resources/
 │           └── application.properties
 ├── k8s/

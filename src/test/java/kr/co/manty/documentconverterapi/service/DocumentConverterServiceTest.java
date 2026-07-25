@@ -14,22 +14,37 @@ import kr.dogfoot.hwplib.reader.HWPReader;
 import org.junit.jupiter.api.Test;
 
 import javax.imageio.ImageIO;
+import javax.xml.parsers.DocumentBuilderFactory;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class DocumentConverterServiceTest {
+
+    private static final String HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph";
 
     private final DocumentConverterService service = new DocumentConverterService();
 
     @Test
     void markdownToHwpAppliesDistinctHeadingStyles() throws Exception {
         byte[] hwpBytes = service.markdownToHwp("""
+                도입 문단
                 # 제목 1
                 ## 제목 2
                 ### 제목 3
@@ -44,11 +59,12 @@ class DocumentConverterServiceTest {
             List<Paragraph> paragraphs = Arrays.stream(hwpFile.getBodyText().getSectionList().getFirst().getParagraphs())
                     .filter(paragraph -> !normalString(paragraph).isBlank())
                     .toList();
-            assertThat(paragraphs).hasSizeGreaterThanOrEqualTo(4);
-            assertThat(charShapeId(paragraphs.get(0))).isEqualTo(0);
-            assertThat(charShapeId(paragraphs.get(1))).isEqualTo(1);
-            assertThat(charShapeId(paragraphs.get(2))).isEqualTo(2);
-            assertThat(charShapeId(paragraphs.get(3))).isEqualTo(5);
+            assertThat(paragraphs).hasSizeGreaterThanOrEqualTo(5);
+            assertThat(charShapeId(paragraphs.get(0))).isEqualTo(5);
+            assertThat(charShapeId(paragraphs.get(1))).isEqualTo(0);
+            assertThat(charShapeId(paragraphs.get(2))).isEqualTo(1);
+            assertThat(charShapeId(paragraphs.get(3))).isEqualTo(2);
+            assertThat(charShapeId(paragraphs.get(4))).isEqualTo(5);
 
             List<CharShape> charShapes = hwpFile.getDocInfo().getCharShapeList();
             assertThat(charShapes.get(0).getBaseSize()).isGreaterThan(charShapes.get(1).getBaseSize());
@@ -57,6 +73,12 @@ class DocumentConverterServiceTest {
             assertThat(charShapes.get(0).getProperty().isBold()).isTrue();
             assertThat(charShapes.get(1).getProperty().isBold()).isTrue();
             assertThat(charShapes.get(2).getProperty().isBold()).isTrue();
+            assertThat(firstLineVerticalPosition(paragraphs.get(1)) - paragraphBottom(paragraphs.get(0)))
+                    .isGreaterThanOrEqualTo(1800);
+            assertThat(firstLineVerticalPosition(paragraphs.get(2)) - paragraphBottom(paragraphs.get(1)))
+                    .isGreaterThanOrEqualTo(1500);
+            assertThat(firstLineVerticalPosition(paragraphs.get(3)) - paragraphBottom(paragraphs.get(2)))
+                    .isGreaterThanOrEqualTo(1200);
             assertThat(paragraphs).allSatisfy(paragraph -> {
                 assertThat(paragraph.getHeader().getDivideSort().getValue()).isZero();
                 assertThat(paragraph.getLineSeg()).isNotNull();
@@ -172,6 +194,99 @@ class DocumentConverterServiceTest {
         }
     }
 
+    @Test
+    void markdownToHwpxUsesStyledMarkdownPipeline() throws Exception {
+        Path imagePath = Files.createTempFile("markdown-hwpx-image", ".png");
+        try {
+            BufferedImage image = new BufferedImage(8, 4, BufferedImage.TYPE_INT_RGB);
+            ImageIO.write(image, "png", imagePath.toFile());
+
+            byte[] hwpxBytes = service.markdownToHwpx("""
+                    도입 문단
+                    # 제목
+                    ## 부제
+                    ### 소제목
+
+                    본문
+
+                    * 첫 항목
+                    * 둘째 항목
+
+                    ```go
+                    func main() {
+                        println("hello")
+                    }
+                    ```
+
+                    ![샘플](%s)
+                    """.formatted(imagePath.toUri()));
+            String sectionXml = zipEntryText(hwpxBytes, "Contents/section0.xml");
+            String headerXml = zipEntryText(hwpxBytes, "Contents/header.xml");
+            String contentHpf = zipEntryText(hwpxBytes, "Contents/content.hpf");
+
+            assertWellFormedXml(sectionXml);
+            assertWellFormedXml(headerXml);
+            assertWellFormedXml(contentHpf);
+            assertEveryHwpxParagraphHasLineSegments(sectionXml);
+            assertHwpxHeadingStyle(sectionXml, headerXml, "제목", 1600);
+            assertHwpxHeadingStyle(sectionXml, headerXml, "부제", 1400);
+            assertHwpxHeadingStyle(sectionXml, headerXml, "소제목", 1200);
+            assertHwpxHeadingTopSpacing(sectionXml, "도입 문단", "제목", 1800);
+            assertHwpxHeadingTopSpacing(sectionXml, "제목", "부제", 1500);
+            assertHwpxHeadingTopSpacing(sectionXml, "부제", "소제목", 1200);
+            assertThat(sectionXml)
+                    .contains("<hp:tbl")
+                    .contains("<hp:lineBreak/>")
+                    .doesNotContain("\u241E")
+                    .doesNotContain(MarkdownDocumentPreProcessor.HWPX_HEADING_MARKER_PREFIX);
+            assertHwpxCodeBlockTableIsStyled(sectionXml, headerXml);
+            assertThat(headerXml)
+                    .contains("<hh:bullets")
+                    .contains("type=\"BULLET\"")
+                    .contains("char=\"•\"")
+                    .contains("<hh:align horizontal=\"LEFT\" vertical=\"BASELINE\"/><hh:heading type=\"BULLET\"");
+            assertThat(sectionXml)
+                    .contains("첫 항목")
+                    .contains("둘째 항목")
+                    .doesNotContain("> - 첫 항목")
+                    .doesNotContain("> - 둘째 항목")
+                    .doesNotContain("> * 첫 항목")
+                    .doesNotContain("> * 둘째 항목");
+            assertThat(sectionXml)
+                    .contains("<hp:pic")
+                    .contains("binaryItemIDRef=\"image1\"")
+                    .doesNotContain(MarkdownDocumentPreProcessor.MARKDOWN_IMAGE_MARKER_PREFIX)
+                    .doesNotContain("[샘플]");
+            assertThat(contentHpf)
+                    .contains("id=\"image1\"")
+                    .contains("href=\"BinData/image1.png\"")
+                    .contains("media-type=\"image/png\"");
+            assertThat(zipHasEntry(hwpxBytes, "BinData/image1.png")).isTrue();
+        } finally {
+            Files.deleteIfExists(imagePath);
+        }
+    }
+
+    @Test
+    void markdownToHwpxAddsLineSegmentsForBorderlineBulletAndCodeParagraphs() throws Exception {
+        byte[] hwpxBytes = service.markdownToHwpx("""
+                ## NFS 설정
+
+                * 이렇게 설치된 nfs server 를 설정하자. 먼저 파일이 저장될 디렉토리를 하나 만든다.
+                * 자동으로 nfs-client 라는 storageClass 가 만들어 졌다.
+
+                ```
+                /nas 192.168.31.0/24(rw,sync,no_subtree_check)
+                ```
+                """);
+
+        String sectionXml = zipEntryText(hwpxBytes, "Contents/section0.xml");
+
+        assertHwpxParagraphLineSegmentCount(sectionXml, "이렇게 설치된 nfs server 를 설정하자. 먼저 파일이 저장될 디렉토리를 하나 만든다.", 2);
+        assertHwpxParagraphLineSegmentCount(sectionXml, "자동으로 nfs-client 라는 storageClass 가 만들어 졌다.", 2);
+        assertHwpxParagraphLineSegmentCount(sectionXml, "/nas 192.168.31.0/24(rw,sync,no_subtree_check)", 2);
+    }
+
     private long charShapeId(Paragraph paragraph) {
         return paragraph.getCharShape().getPositonShapeIdPairList().getFirst().getShapeId();
     }
@@ -192,6 +307,18 @@ class DocumentConverterServiceTest {
                 .map(Control::getClass)
                 .map(Class::getSimpleName)
                 .toList();
+    }
+
+    private int firstLineVerticalPosition(Paragraph paragraph) {
+        return paragraph.getLineSeg().getLineSegItemList().getFirst().getLineVerticalPosition();
+    }
+
+    private int paragraphBottom(Paragraph paragraph) {
+        var lineSegments = paragraph.getLineSeg().getLineSegItemList();
+        var lastLineSegment = lineSegments.getLast();
+        return lastLineSegment.getLineVerticalPosition()
+                + lastLineSegment.getLineHeight()
+                + lastLineSegment.getLineSpace();
     }
 
     private ControlTable firstControlTable(HWPFile hwpFile) {
@@ -228,6 +355,229 @@ class DocumentConverterServiceTest {
             text.append(normalString(paragraph));
         }
         return text.toString();
+    }
+
+    private String zipEntryText(byte[] zipBytes, String entryName) throws IOException {
+        return new String(zipEntryBytes(zipBytes, entryName), StandardCharsets.UTF_8);
+    }
+
+    private void assertWellFormedXml(String xml) throws Exception {
+        parseXml(xml);
+    }
+
+    private void assertEveryHwpxParagraphHasLineSegments(String xml) throws Exception {
+        Document document = parseXml(xml);
+        NodeList paragraphs = document.getElementsByTagNameNS(HP_NS, "p");
+        assertThat(paragraphs.getLength()).isPositive();
+        for (int i = 0; i < paragraphs.getLength(); i++) {
+            Element paragraph = (Element) paragraphs.item(i);
+            Element lineSegArray = directChild(paragraph, "linesegarray");
+            assertThat(lineSegArray)
+                    .as("section0 paragraph %s has linesegarray", i)
+                    .isNotNull();
+            assertThat(directChild(lineSegArray, "lineseg"))
+                    .as("section0 paragraph %s has at least one lineseg", i)
+                    .isNotNull();
+        }
+    }
+
+    private Document parseXml(String xml) throws Exception {
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(true);
+        return factory.newDocumentBuilder().parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private Element directChild(Element parent, String localName) {
+        NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node child = children.item(i);
+            if (child.getNodeType() == Node.ELEMENT_NODE
+                    && HP_NS.equals(child.getNamespaceURI())
+                    && localName.equals(child.getLocalName())) {
+                return (Element) child;
+            }
+        }
+        return null;
+    }
+
+    private void assertHwpxHeadingStyle(String sectionXml, String headerXml, String text, int height) throws Exception {
+        Element paragraph = paragraphByText(parseXml(sectionXml), text);
+        Element run = directChild(paragraph, "run");
+        assertThat(run).isNotNull();
+        String charPrId = run.getAttribute("charPrIDRef");
+        assertThat(charPrId).isNotBlank();
+
+        String charPrXml = firstMatch(headerXml, "<hh:charPr\\s+id=\"" + charPrId + "\"(?:\\s|>).*?</hh:charPr>");
+        assertThat(longAttribute(charPrXml, "hh:charPr", "height")).isEqualTo(height);
+        assertThat(charPrXml).contains("<hh:bold");
+
+        Element lineSegArray = directChild(paragraph, "linesegarray");
+        assertThat(lineSegArray).isNotNull();
+        Element lineSeg = directChild(lineSegArray, "lineseg");
+        assertThat(lineSeg).isNotNull();
+        assertThat(lineSeg.getAttribute("textheight")).isEqualTo(String.valueOf(height));
+    }
+
+    private void assertHwpxHeadingTopSpacing(
+            String sectionXml,
+            String previousText,
+            String headingText,
+            int minimumTopSpacing
+    ) throws Exception {
+        Document document = parseXml(sectionXml);
+        Element previousParagraph = paragraphByText(document, previousText);
+        Element headingParagraph = paragraphByText(document, headingText);
+
+        assertThat(hwpxFirstLineVerticalPosition(headingParagraph) - hwpxParagraphBottom(previousParagraph))
+                .isGreaterThanOrEqualTo(minimumTopSpacing);
+    }
+
+    private int hwpxFirstLineVerticalPosition(Element paragraph) {
+        Element lineSegArray = directChild(paragraph, "linesegarray");
+        assertThat(lineSegArray).isNotNull();
+        return intAttribute(directChildren(lineSegArray, "lineseg").getFirst(), "vertpos");
+    }
+
+    private int hwpxParagraphBottom(Element paragraph) {
+        Element lineSegArray = directChild(paragraph, "linesegarray");
+        assertThat(lineSegArray).isNotNull();
+        List<Element> lineSegments = directChildren(lineSegArray, "lineseg");
+        Element lastLineSegment = lineSegments.getLast();
+        return intAttribute(lastLineSegment, "vertpos")
+                + intAttribute(lastLineSegment, "textheight")
+                + intAttribute(lastLineSegment, "spacing");
+    }
+
+    private int intAttribute(Element element, String name) {
+        assertThat(element.hasAttribute(name)).isTrue();
+        return Integer.parseInt(element.getAttribute(name));
+    }
+
+    private Element paragraphByText(Document document, String text) {
+        NodeList paragraphs = document.getElementsByTagNameNS(HP_NS, "p");
+        for (int i = 0; i < paragraphs.getLength(); i++) {
+            Element paragraph = (Element) paragraphs.item(i);
+            if (text.equals(paragraphText(paragraph))) {
+                return paragraph;
+            }
+        }
+        throw new AssertionError("HWPX paragraph not found: " + text);
+    }
+
+    private String paragraphText(Element paragraph) {
+        StringBuilder text = new StringBuilder();
+        NodeList children = paragraph.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node child = children.item(i);
+            if (child.getNodeType() != Node.ELEMENT_NODE
+                    || !HP_NS.equals(child.getNamespaceURI())
+                    || !"run".equals(child.getLocalName())) {
+                continue;
+            }
+
+            Element run = (Element) child;
+            NodeList runChildren = run.getChildNodes();
+            for (int j = 0; j < runChildren.getLength(); j++) {
+                Node runChild = runChildren.item(j);
+                if (runChild.getNodeType() == Node.ELEMENT_NODE
+                        && HP_NS.equals(runChild.getNamespaceURI())
+                        && "t".equals(runChild.getLocalName())) {
+                    text.append(runChild.getTextContent());
+                }
+            }
+        }
+        return text.toString();
+    }
+
+    private void assertHwpxParagraphLineSegmentCount(String sectionXml, String text, int minimumCount) throws Exception {
+        Element paragraph = paragraphByText(parseXml(sectionXml), text);
+        Element lineSegArray = directChild(paragraph, "linesegarray");
+        assertThat(lineSegArray).isNotNull();
+        assertThat(directChildren(lineSegArray, "lineseg")).hasSizeGreaterThanOrEqualTo(minimumCount);
+    }
+
+    private List<Element> directChildren(Element parent, String localName) {
+        List<Element> children = new ArrayList<>();
+        NodeList nodeList = parent.getChildNodes();
+        for (int i = 0; i < nodeList.getLength(); i++) {
+            Node child = nodeList.item(i);
+            if (child.getNodeType() == Node.ELEMENT_NODE
+                    && HP_NS.equals(child.getNamespaceURI())
+                    && localName.equals(child.getLocalName())) {
+                children.add((Element) child);
+            }
+        }
+        return children;
+    }
+
+    private void assertHwpxCodeBlockTableIsStyled(String sectionXml, String headerXml) {
+        String codeBorderFillId = codeBorderFillId(headerXml);
+        String tableXml = firstMatch(sectionXml, "<hp:tbl\\b.*?</hp:tbl>");
+
+        assertThat(tableXml)
+                .contains("borderFillIDRef=\"" + codeBorderFillId + "\"")
+                .doesNotContain("\u241E");
+        assertThat(headerXml)
+                .contains("id=\"" + codeBorderFillId + "\"")
+                .contains("color=\"#D0D7DE\"")
+                .contains("faceColor=\"#F6F8FA\"");
+        assertThat(longAttribute(tableXml, "hp:sz", "height")).isGreaterThan(6500L);
+        assertThat(longAttribute(tableXml, "hp:cellSz", "height")).isGreaterThan(6500L);
+        assertThat(longAttribute(tableXml, "hp:cellMargin", "left")).isGreaterThan(500L);
+        assertThat(longAttribute(tableXml, "hp:cellMargin", "right")).isGreaterThan(500L);
+        assertThat(longAttribute(tableXml, "hp:cellMargin", "top")).isGreaterThan(500L);
+        assertThat(longAttribute(tableXml, "hp:cellMargin", "bottom")).isGreaterThan(500L);
+        assertThat(countMatches(tableXml, "<hp:lineseg\\b")).isGreaterThanOrEqualTo(4);
+    }
+
+    private String codeBorderFillId(String headerXml) {
+        Matcher matcher = Pattern.compile(
+                "<hh:borderFill\\s+id=\"(\\d+)\"[^>]*>(?:(?!</hh:borderFill>).)*faceColor=\"#F6F8FA\"(?:(?!</hh:borderFill>).)*</hh:borderFill>",
+                Pattern.DOTALL
+        ).matcher(headerXml);
+        assertThat(matcher.find()).isTrue();
+        return matcher.group(1);
+    }
+
+    private String firstMatch(String text, String regex) {
+        Matcher matcher = Pattern.compile(regex, Pattern.DOTALL).matcher(text);
+        assertThat(matcher.find()).isTrue();
+        return matcher.group();
+    }
+
+    private long longAttribute(String xml, String elementName, String attributeName) {
+        Matcher matcher = Pattern.compile("<\\Q" + elementName + "\\E\\b[^>]*\\b\\Q" + attributeName + "\\E=\"(\\d+)\"")
+                .matcher(xml);
+        assertThat(matcher.find()).isTrue();
+        return Long.parseLong(matcher.group(1));
+    }
+
+    private long countMatches(String text, String regex) {
+        return Pattern.compile(regex).matcher(text).results().count();
+    }
+
+    private boolean zipHasEntry(byte[] zipBytes, String entryName) throws IOException {
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (entryName.equals(entry.getName())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private byte[] zipEntryBytes(byte[] zipBytes, String entryName) throws IOException {
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (entryName.equals(entry.getName())) {
+                    return zis.readAllBytes();
+                }
+            }
+        }
+        throw new AssertionError("ZIP entry not found: " + entryName);
     }
 
     private String cellText(Cell cell) {
