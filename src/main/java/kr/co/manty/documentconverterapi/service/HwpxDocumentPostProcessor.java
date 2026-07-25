@@ -49,6 +49,9 @@ final class HwpxDocumentPostProcessor {
     private static final int DEFAULT_BODY_WIDTH = 42520;
     private static final int DEFAULT_BODY_HEIGHT = 74268;
     private static final int DEFAULT_LINE_HEIGHT = 1000;
+    private static final int HWPX_H1_HEIGHT = 1600;
+    private static final int HWPX_H2_HEIGHT = 1400;
+    private static final int HWPX_H3_HEIGHT = 1200;
     private static final int IMAGE_FALLBACK_HEIGHT = millimetersToHwp(40.0);
     private static final long CODE_LINE_HEIGHT = 1105L;
     private static final int CODE_TABLE_CELL_MARGIN = millimetersToHwp(2.0);
@@ -62,7 +65,9 @@ final class HwpxDocumentPostProcessor {
             Pattern.DOTALL
     );
     private static final Pattern PARA_PR_ID = Pattern.compile("<hh:paraPr\\s+id=\"(\\d+)\"");
+    private static final Pattern CHAR_PR_ID = Pattern.compile("<hh:charPr\\s+id=\"(\\d+)\"");
     private static final Pattern BORDER_FILL_ID = Pattern.compile("<hh:borderFill\\s+id=\"(\\d+)\"");
+    private static final Pattern CHAR_PROPERTIES_OPEN = Pattern.compile("<hh:charProperties itemCnt=\"(\\d+)\">");
     private static final Pattern BORDER_FILLS_OPEN = Pattern.compile("<hh:borderFills itemCnt=\"(\\d+)\">");
     private static final Pattern CODE_TABLE_BORDER_FILL = Pattern.compile(
             "<hh:borderFill\\s+id=\"(\\d+)\"[^>]*>(?:(?!</hh:borderFill>).)*faceColor=\"#F6F8FA\"(?:(?!</hh:borderFill>).)*</hh:borderFill>",
@@ -92,6 +97,7 @@ final class HwpxDocumentPostProcessor {
             HeaderResult header = ensureHeaderStyles(xmlString(headerBytes));
             state.bulletParaPrId(header.bulletParaPrId());
             state.codeBorderFillId(header.codeBorderFillId());
+            state.headingStyles(header.headingStyles());
             entries.put("Contents/header.xml", xmlBytes(header.xml()));
         }
 
@@ -103,7 +109,8 @@ final class HwpxDocumentPostProcessor {
             sectionXml = normalizeCodeTables(sectionXml, state.codeBorderFillId());
             sectionXml = replaceMarkdownImageMarkers(sectionXml, state);
             sectionXml = normalizeListParagraphs(sectionXml, state.bulletParaPrId());
-            sectionXml = addLineSegments(sectionXml);
+            sectionXml = normalizeHeadingParagraphs(sectionXml, state.headingStyles());
+            sectionXml = addLineSegments(sectionXml, state.headingStyles());
             entries.put(entry.getKey(), xmlBytes(sectionXml));
         }
 
@@ -155,7 +162,32 @@ final class HwpxDocumentPostProcessor {
     private static HeaderResult ensureHeaderStyles(String headerXml) {
         BulletParagraphResult bulletResult = ensureBulletParagraphStyle(headerXml);
         BorderFillResult codeBorderFill = ensureCodeTableBorderFill(bulletResult.xml());
-        return new HeaderResult(codeBorderFill.xml(), bulletResult.bulletParaPrId(), codeBorderFill.borderFillId());
+        HeadingStyleResult headingStyles = ensureHeadingCharStyles(codeBorderFill.xml());
+        return new HeaderResult(
+                headingStyles.xml(),
+                bulletResult.bulletParaPrId(),
+                codeBorderFill.borderFillId(),
+                headingStyles.headingStyles()
+        );
+    }
+
+    private static HeadingStyleResult ensureHeadingCharStyles(String headerXml) {
+        String updated = headerXml;
+        Map<Integer, HeadingStyle> headingStyles = new LinkedHashMap<>();
+        int[][] styleDefinitions = {
+                {1, HWPX_H1_HEIGHT},
+                {2, HWPX_H2_HEIGHT},
+                {3, HWPX_H3_HEIGHT}
+        };
+
+        for (int[] styleDefinition : styleDefinitions) {
+            int level = styleDefinition[0];
+            int height = styleDefinition[1];
+            int charPrId = nextCharPrId(updated);
+            updated = insertHeadingCharPr(updated, charPrId, height);
+            headingStyles.put(level, new HeadingStyle(charPrId, height));
+        }
+        return new HeadingStyleResult(updated, Map.copyOf(headingStyles));
     }
 
     private static BulletParagraphResult ensureBulletParagraphStyle(String headerXml) {
@@ -239,6 +271,30 @@ final class HwpxDocumentPostProcessor {
             max = Math.max(max, Integer.parseInt(matcher.group(1)));
         }
         return max + 1;
+    }
+
+    private static int nextCharPrId(String headerXml) {
+        int max = -1;
+        Matcher matcher = CHAR_PR_ID.matcher(headerXml);
+        while (matcher.find()) {
+            max = Math.max(max, Integer.parseInt(matcher.group(1)));
+        }
+        return max + 1;
+    }
+
+    private static String insertHeadingCharPr(String headerXml, int charPrId, int height) {
+        Matcher matcher = CHAR_PROPERTIES_OPEN.matcher(headerXml);
+        if (!matcher.find()) {
+            return headerXml;
+        }
+
+        int itemCount = Integer.parseInt(matcher.group(1));
+        String updatedOpen = matcher.group(0).replace("itemCnt=\"" + itemCount + "\"", "itemCnt=\"" + (itemCount + 1) + "\"");
+        String updated = headerXml.substring(0, matcher.start()) + updatedOpen + headerXml.substring(matcher.end());
+        String charPr = """
+                <hh:charPr id="%d" height="%d" textColor="#111827" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="2"><hh:fontRef hangul="1" latin="1" hanja="1" japanese="1" other="1" symbol="1" user="1"/><hh:ratio hangul="100" latin="100" hanja="100" japanese="100" other="100" symbol="100" user="100"/><hh:spacing hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/><hh:relSz hangul="100" latin="100" hanja="100" japanese="100" other="100" symbol="100" user="100"/><hh:offset hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/><hh:bold/><hh:underline type="NONE" shape="SOLID" color="#000000"/><hh:strikeout shape="NONE" color="#000000"/><hh:outline type="NONE"/><hh:shadow type="NONE" color="#B2B2B2" offsetX="10" offsetY="10"/></hh:charPr>"""
+                .formatted(charPrId, height);
+        return updated.replace("</hh:charProperties>", charPr + "</hh:charProperties>");
     }
 
     private static int nextBorderFillId(String headerXml) {
@@ -590,11 +646,87 @@ final class HwpxDocumentPostProcessor {
         return buffer.toString();
     }
 
-    private static String addLineSegments(String sectionXml) throws IOException {
+    private static String normalizeHeadingParagraphs(String sectionXml, Map<Integer, HeadingStyle> headingStyles) throws IOException {
+        if (headingStyles.isEmpty()) {
+            return sectionXml;
+        }
+
+        try {
+            Document document = parseXml(sectionXml);
+            boolean changed = false;
+            NodeList paragraphs = document.getElementsByTagNameNS(HP_NS, "p");
+            for (int i = 0; i < paragraphs.getLength(); i++) {
+                Element paragraph = (Element) paragraphs.item(i);
+                if (nearestAncestor(paragraph, HP_NS, "tc") != null) {
+                    continue;
+                }
+
+                changed = applyHeadingStyle(paragraph, headingStyles) || changed;
+            }
+            return changed ? serializeXml(document) : sectionXml;
+        } catch (Exception e) {
+            throw new IOException("Failed to normalize HWPX heading paragraphs", e);
+        }
+    }
+
+    private static boolean applyHeadingStyle(Element paragraph, Map<Integer, HeadingStyle> headingStyles) {
+        Element firstText = firstDirectText(paragraph);
+        if (firstText == null) {
+            return false;
+        }
+
+        String text = firstText.getTextContent();
+        HeadingMarker marker = headingMarker(text);
+        if (marker == null) {
+            return false;
+        }
+
+        HeadingStyle style = headingStyles.get(marker.level());
+        if (style == null) {
+            return false;
+        }
+
+        firstText.setTextContent(text.substring(marker.endIndex()));
+        for (Element run : directChildren(paragraph, HP_NS, "run")) {
+            run.setAttribute("charPrIDRef", String.valueOf(style.charPrId()));
+        }
+        return true;
+    }
+
+    private static Element firstDirectText(Element paragraph) {
+        for (Element run : directChildren(paragraph, HP_NS, "run")) {
+            Element text = directChild(run, HP_NS, "t");
+            if (text != null) {
+                return text;
+            }
+        }
+        return null;
+    }
+
+    private static HeadingMarker headingMarker(String text) {
+        if (text == null || !text.startsWith(MarkdownDocumentPreProcessor.HWPX_HEADING_MARKER_PREFIX)) {
+            return null;
+        }
+
+        int levelStart = MarkdownDocumentPreProcessor.HWPX_HEADING_MARKER_PREFIX.length();
+        int levelEnd = text.indexOf(MarkdownDocumentPreProcessor.HWPX_HEADING_MARKER_SUFFIX, levelStart);
+        if (levelEnd < 0) {
+            return null;
+        }
+
+        try {
+            int level = Integer.parseInt(text.substring(levelStart, levelEnd));
+            return new HeadingMarker(Math.max(1, Math.min(3, level)), levelEnd + MarkdownDocumentPreProcessor.HWPX_HEADING_MARKER_SUFFIX.length());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static String addLineSegments(String sectionXml, Map<Integer, HeadingStyle> headingStyles) throws IOException {
         try {
             Document document = parseXml(sectionXml);
             applyTableCellLineSegments(document);
-            applySectionLineSegments(document);
+            applySectionLineSegments(document, headingStyles);
             return serializeXml(document);
         } catch (Exception e) {
             throw new IOException("Failed to add HWPX line segments", e);
@@ -637,19 +769,25 @@ final class HwpxDocumentPostProcessor {
                         paragraph,
                         directChild(paragraph, HP_NS, "linesegarray"),
                         verticalPosition,
-                        lineWidth(paragraph, DEFAULT_BODY_WIDTH)
+                        lineWidth(paragraph, DEFAULT_BODY_WIDTH),
+                        Map.of()
                 );
             }
         }
     }
 
-    private static void applySectionLineSegments(Document document) {
+    private static void applySectionLineSegments(Document document, Map<Integer, HeadingStyle> headingStyles) {
         Element section = document.getDocumentElement();
         PageMetrics pageMetrics = pageMetrics(document);
         int verticalPosition = 0;
 
         for (Element paragraph : directChildren(section, HP_NS, "p")) {
-            LineSegmentPlan plan = lineSegmentPlan(paragraph, directChild(paragraph, HP_NS, "linesegarray"), pageMetrics.bodyWidth());
+            LineSegmentPlan plan = lineSegmentPlan(
+                    paragraph,
+                    directChild(paragraph, HP_NS, "linesegarray"),
+                    pageMetrics.bodyWidth(),
+                    headingStyles
+            );
             if (verticalPosition > 0 && verticalPosition + plan.height() > pageMetrics.bodyHeight()) {
                 verticalPosition = 0;
             }
@@ -658,7 +796,8 @@ final class HwpxDocumentPostProcessor {
                     paragraph,
                     directChild(paragraph, HP_NS, "linesegarray"),
                     verticalPosition,
-                    pageMetrics.bodyWidth()
+                    pageMetrics.bodyWidth(),
+                    headingStyles
             );
             if (verticalPosition > pageMetrics.bodyHeight()) {
                 verticalPosition = 0;
@@ -671,9 +810,10 @@ final class HwpxDocumentPostProcessor {
             Element paragraph,
             Element existingLineSegArray,
             int verticalPosition,
-            int paragraphWidth
+            int paragraphWidth,
+            Map<Integer, HeadingStyle> headingStyles
     ) {
-        LineSegmentPlan plan = lineSegmentPlan(paragraph, existingLineSegArray, paragraphWidth);
+        LineSegmentPlan plan = lineSegmentPlan(paragraph, existingLineSegArray, paragraphWidth, headingStyles);
         Element lineSegArray = existingLineSegArray != null
                 ? existingLineSegArray
                 : document.createElementNS(HP_NS, "hp:linesegarray");
@@ -702,8 +842,18 @@ final class HwpxDocumentPostProcessor {
         return currentVerticalPosition;
     }
 
-    private static LineSegmentPlan lineSegmentPlan(Element paragraph, Element existingLineSegArray, int paragraphWidth) {
+    private static LineSegmentPlan lineSegmentPlan(
+            Element paragraph,
+            Element existingLineSegArray,
+            int paragraphWidth,
+            Map<Integer, HeadingStyle> headingStyles
+    ) {
         LineSegmentSeed seed = lineSegmentSeed(existingLineSegArray);
+        int styledLineHeight = paragraphStyledLineHeight(paragraph, headingStyles);
+        if (styledLineHeight > seed.lineHeight()) {
+            seed = new LineSegmentSeed(styledLineHeight, lineAdvance(styledLineHeight) - styledLineHeight);
+        }
+
         String text = directParagraphText(paragraph);
         int objectHeight = directObjectHeight(paragraph);
         int lineHeight = Math.max(seed.lineHeight(), objectHeight);
@@ -712,8 +862,25 @@ final class HwpxDocumentPostProcessor {
         boolean objectOnly = objectHeight > 0 && text.isBlank();
         List<Integer> starts = objectOnly
                 ? List.of(0)
-                : lineStarts(text, lineWidth, seed.lineHeight());
+                : lineStarts(text, lineWidth, lineHeight);
         return new LineSegmentPlan(starts, lineHeight, lineAdvance, lineWidth, objectOnly);
+    }
+
+    private static int paragraphStyledLineHeight(Element paragraph, Map<Integer, HeadingStyle> headingStyles) {
+        if (headingStyles.isEmpty()) {
+            return 0;
+        }
+
+        int lineHeight = 0;
+        for (Element run : directChildren(paragraph, HP_NS, "run")) {
+            int charPrId = positiveIntAttribute(run, "charPrIDRef", -1);
+            for (HeadingStyle style : headingStyles.values()) {
+                if (style.charPrId() == charPrId) {
+                    lineHeight = Math.max(lineHeight, style.lineHeight());
+                }
+            }
+        }
+        return lineHeight;
     }
 
     private static LineSegmentSeed lineSegmentSeed(Element lineSegArray) {
@@ -1059,13 +1226,22 @@ final class HwpxDocumentPostProcessor {
         return xml.getBytes(StandardCharsets.UTF_8);
     }
 
-    private record HeaderResult(String xml, int bulletParaPrId, int codeBorderFillId) {
+    private record HeaderResult(String xml, int bulletParaPrId, int codeBorderFillId, Map<Integer, HeadingStyle> headingStyles) {
     }
 
     private record BulletParagraphResult(String xml, int bulletParaPrId) {
     }
 
     private record BorderFillResult(String xml, int borderFillId) {
+    }
+
+    private record HeadingStyleResult(String xml, Map<Integer, HeadingStyle> headingStyles) {
+    }
+
+    private record HeadingStyle(int charPrId, int lineHeight) {
+    }
+
+    private record HeadingMarker(int level, int endIndex) {
     }
 
     private record PageMetrics(int bodyWidth, int bodyHeight) {
@@ -1118,6 +1294,7 @@ final class HwpxDocumentPostProcessor {
         private int nextPictureId = 1;
         private int bulletParaPrId = -1;
         private int codeBorderFillId = -1;
+        private Map<Integer, HeadingStyle> headingStyles = Map.of();
 
         private ProcessingState(int nextImageIndex) {
             this.nextImageIndex = nextImageIndex;
@@ -1163,6 +1340,14 @@ final class HwpxDocumentPostProcessor {
 
         private void codeBorderFillId(int codeBorderFillId) {
             this.codeBorderFillId = codeBorderFillId;
+        }
+
+        private Map<Integer, HeadingStyle> headingStyles() {
+            return headingStyles;
+        }
+
+        private void headingStyles(Map<Integer, HeadingStyle> headingStyles) {
+            this.headingStyles = headingStyles;
         }
     }
 }

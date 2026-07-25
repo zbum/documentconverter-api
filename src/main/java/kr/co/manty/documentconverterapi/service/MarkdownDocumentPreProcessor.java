@@ -6,6 +6,7 @@ import kr.co.manty.docconv.core.model.Inline;
 import kr.co.manty.docconv.core.model.TableModel;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 
@@ -16,38 +17,65 @@ final class MarkdownDocumentPreProcessor {
     static final String MARKDOWN_IMAGE_MARKER_PREFIX = "\u241FIMG:";
     static final String MARKDOWN_IMAGE_MARKER_SEPARATOR = ":";
     static final String MARKDOWN_IMAGE_MARKER_SUFFIX = "\u241F";
+    static final String HWPX_HEADING_MARKER_PREFIX = "\u241FHD:";
+    static final String HWPX_HEADING_MARKER_SUFFIX = "\u241F";
 
     private MarkdownDocumentPreProcessor() {
     }
 
     static Document apply(Document document) {
-        Document processed = new Document(transformBlocks(document.getBlocks()));
+        Document processed = new Document(transformBlocks(document.getBlocks(), false));
         processed.setMetadata(document.getMetadata());
         return processed;
     }
 
-    private static List<Block> transformBlocks(List<Block> blocks) {
+    static Document applyForHwpx(Document document) {
+        Document processed = new Document(transformBlocks(document.getBlocks(), true));
+        processed.setMetadata(document.getMetadata());
+        return processed;
+    }
+
+    private static List<Block> transformBlocks(List<Block> blocks, boolean markHeadingLevel) {
         return blocks.stream()
-                .map(MarkdownDocumentPreProcessor::transformBlock)
+                .map(block -> transformBlock(block, markHeadingLevel))
                 .toList();
     }
 
-    private static Block transformBlock(Block block) {
+    private static Block transformBlock(Block block, boolean markHeadingLevel) {
         return switch (block) {
             case Block.Paragraph paragraph -> new Block.Paragraph(transformInlines(paragraph.inlines()));
-            case Block.Heading heading -> new Block.Heading(heading.level(), transformInlines(heading.inlines()));
+            case Block.Heading heading -> new Block.Heading(
+                    heading.level(),
+                    headingInlines(heading.level(), transformInlines(heading.inlines()), markHeadingLevel)
+            );
             case Block.CodeBlock codeBlock -> codeBlockTable(codeBlock);
-            case Block.BlockQuote blockQuote -> new Block.BlockQuote(transformBlocks(blockQuote.blocks()));
-            case Block.ListBlock listBlock -> transformListBlock(listBlock);
+            case Block.BlockQuote blockQuote -> new Block.BlockQuote(transformBlocks(blockQuote.blocks(), markHeadingLevel));
+            case Block.ListBlock listBlock -> transformListBlock(listBlock, markHeadingLevel);
             default -> block;
         };
     }
 
-    private static Block.ListBlock transformListBlock(Block.ListBlock listBlock) {
+    private static Block.ListBlock transformListBlock(Block.ListBlock listBlock, boolean markHeadingLevel) {
         List<Block.ListItem> items = listBlock.items().stream()
-                .map(item -> new Block.ListItem(transformBlocks(item.blocks())))
+                .map(item -> new Block.ListItem(transformBlocks(item.blocks(), markHeadingLevel)))
                 .toList();
         return new Block.ListBlock(listBlock.ordered(), listBlock.startNumber(), items);
+    }
+
+    private static List<Inline> headingInlines(int level, List<Inline> inlines, boolean markHeadingLevel) {
+        if (!markHeadingLevel) {
+            return inlines;
+        }
+
+        List<Inline> marked = new ArrayList<>(inlines.size() + 1);
+        marked.add(new Inline.Text(headingMarker(level)));
+        marked.addAll(inlines);
+        return marked;
+    }
+
+    private static String headingMarker(int level) {
+        int normalizedLevel = Math.max(1, Math.min(3, level));
+        return HWPX_HEADING_MARKER_PREFIX + normalizedLevel + HWPX_HEADING_MARKER_SUFFIX;
     }
 
     private static List<Inline> transformInlines(List<Inline> inlines) {

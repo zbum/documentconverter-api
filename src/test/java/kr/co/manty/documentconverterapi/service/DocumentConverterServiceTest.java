@@ -195,6 +195,10 @@ class DocumentConverterServiceTest {
 
             byte[] hwpxBytes = service.markdownToHwpx("""
                     # 제목
+                    ## 부제
+                    ### 소제목
+
+                    본문
 
                     * 첫 항목
                     * 둘째 항목
@@ -215,10 +219,14 @@ class DocumentConverterServiceTest {
             assertWellFormedXml(headerXml);
             assertWellFormedXml(contentHpf);
             assertEveryHwpxParagraphHasLineSegments(sectionXml);
+            assertHwpxHeadingStyle(sectionXml, headerXml, "제목", 1600);
+            assertHwpxHeadingStyle(sectionXml, headerXml, "부제", 1400);
+            assertHwpxHeadingStyle(sectionXml, headerXml, "소제목", 1200);
             assertThat(sectionXml)
                     .contains("<hp:tbl")
                     .contains("<hp:lineBreak/>")
-                    .doesNotContain("\u241E");
+                    .doesNotContain("\u241E")
+                    .doesNotContain(MarkdownDocumentPreProcessor.HWPX_HEADING_MARKER_PREFIX);
             assertHwpxCodeBlockTableIsStyled(sectionXml, headerXml);
             assertThat(headerXml)
                     .contains("<hh:bullets")
@@ -345,6 +353,60 @@ class DocumentConverterServiceTest {
             }
         }
         return null;
+    }
+
+    private void assertHwpxHeadingStyle(String sectionXml, String headerXml, String text, int height) throws Exception {
+        Element paragraph = paragraphByText(parseXml(sectionXml), text);
+        Element run = directChild(paragraph, "run");
+        assertThat(run).isNotNull();
+        String charPrId = run.getAttribute("charPrIDRef");
+        assertThat(charPrId).isNotBlank();
+
+        String charPrXml = firstMatch(headerXml, "<hh:charPr\\s+id=\"" + charPrId + "\"(?:\\s|>).*?</hh:charPr>");
+        assertThat(longAttribute(charPrXml, "hh:charPr", "height")).isEqualTo(height);
+        assertThat(charPrXml).contains("<hh:bold");
+
+        Element lineSegArray = directChild(paragraph, "linesegarray");
+        assertThat(lineSegArray).isNotNull();
+        Element lineSeg = directChild(lineSegArray, "lineseg");
+        assertThat(lineSeg).isNotNull();
+        assertThat(lineSeg.getAttribute("textheight")).isEqualTo(String.valueOf(height));
+    }
+
+    private Element paragraphByText(Document document, String text) {
+        NodeList paragraphs = document.getElementsByTagNameNS(HP_NS, "p");
+        for (int i = 0; i < paragraphs.getLength(); i++) {
+            Element paragraph = (Element) paragraphs.item(i);
+            if (text.equals(paragraphText(paragraph))) {
+                return paragraph;
+            }
+        }
+        throw new AssertionError("HWPX paragraph not found: " + text);
+    }
+
+    private String paragraphText(Element paragraph) {
+        StringBuilder text = new StringBuilder();
+        NodeList children = paragraph.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node child = children.item(i);
+            if (child.getNodeType() != Node.ELEMENT_NODE
+                    || !HP_NS.equals(child.getNamespaceURI())
+                    || !"run".equals(child.getLocalName())) {
+                continue;
+            }
+
+            Element run = (Element) child;
+            NodeList runChildren = run.getChildNodes();
+            for (int j = 0; j < runChildren.getLength(); j++) {
+                Node runChild = runChildren.item(j);
+                if (runChild.getNodeType() == Node.ELEMENT_NODE
+                        && HP_NS.equals(runChild.getNamespaceURI())
+                        && "t".equals(runChild.getLocalName())) {
+                    text.append(runChild.getTextContent());
+                }
+            }
+        }
+        return text.toString();
     }
 
     private void assertHwpxCodeBlockTableIsStyled(String sectionXml, String headerXml) {

@@ -47,7 +47,7 @@ public class DocumentConverterService {
         Path tempOutput = Files.createTempFile("output", ".hwpx");
         try {
             Document document = new MarkdownParser().parse(markdown).getResultOrThrow();
-            document = MarkdownDocumentPreProcessor.apply(document);
+            document = MarkdownDocumentPreProcessor.applyForHwpx(document);
             ConversionResult<Path> result = new HwpxWriter().write(document, tempOutput);
             Path outputPath = result.getResultOrThrow();
             HwpxDocumentPostProcessor.apply(outputPath);
