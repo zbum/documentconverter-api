@@ -2,6 +2,10 @@ package kr.co.manty.documentconverterapi.service;
 
 import kr.co.manty.docconv.api.DocConv;
 import kr.co.manty.docconv.core.converter.ConversionResult;
+import kr.co.manty.docconv.core.model.Document;
+import kr.co.manty.docconv.hwp.HwpWriter;
+import kr.co.manty.docconv.markdown.MarkdownParser;
+import kr.dogfoot.hwplib.object.HWPFile;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -25,9 +29,14 @@ public class DocumentConverterService {
     public byte[] markdownToHwp(String markdown) throws IOException {
         Path tempOutput = Files.createTempFile("output", ".hwp");
         try {
-            ConversionResult<Path> result = DocConv.markdownToHwp(markdown, tempOutput);
-            Path outputPath = result.getResultOrThrow();
-            return Files.readAllBytes(outputPath);
+            Document document = new MarkdownParser().parse(markdown).getResultOrThrow();
+            document = MarkdownDocumentPreProcessor.apply(document);
+            HWPFile hwpFile = new HwpWriter().toHwpFile(document).getResultOrThrow();
+            HwpDocumentPostProcessor.apply(hwpFile);
+            kr.dogfoot.hwplib.writer.HWPWriter.toFile(hwpFile, tempOutput.toString());
+            return Files.readAllBytes(tempOutput);
+        } catch (Exception e) {
+            throw new IOException("Failed to convert markdown to HWP", e);
         } finally {
             Files.deleteIfExists(tempOutput);
         }
