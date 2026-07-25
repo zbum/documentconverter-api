@@ -222,7 +222,8 @@ class DocumentConverterServiceTest {
             assertHwpxCodeBlockTableIsStyled(sectionXml, headerXml);
             assertThat(headerXml)
                     .contains("<hh:bullets")
-                    .contains("type=\"BULLET\"");
+                    .contains("type=\"BULLET\"")
+                    .contains("char=\"•\"");
             assertThat(sectionXml)
                     .contains("첫 항목")
                     .contains("둘째 항목")

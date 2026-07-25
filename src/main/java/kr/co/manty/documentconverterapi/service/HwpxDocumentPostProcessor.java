@@ -199,7 +199,7 @@ final class HwpxDocumentPostProcessor {
 
     private static String insertBulletDefinition(String headerXml, int bulletId) {
         String bulletXml = """
-                <hh:bullets itemCnt="1"><hh:bullet id="%d" char="&#x2022;" useImage="0"><hh:paraHead level="0" align="LEFT" useInstWidth="0" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295" checkable="0"/></hh:bullet></hh:bullets>"""
+                <hh:bullets itemCnt="1"><hh:bullet id="%d" char="•" useImage="0"><hh:paraHead level="0" align="LEFT" useInstWidth="0" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="DIGIT" charPrIDRef="4294967295" checkable="0"/></hh:bullet></hh:bullets>"""
                 .formatted(bulletId);
 
         int insertAfterNumberings = headerXml.indexOf("</hh:numberings>");
