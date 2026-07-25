@@ -26,10 +26,16 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class DocumentConverterServiceTest {
+
+    private static final String HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph";
 
     private final DocumentConverterService service = new DocumentConverterService();
 
@@ -206,6 +212,7 @@ class DocumentConverterServiceTest {
             assertWellFormedXml(sectionXml);
             assertWellFormedXml(headerXml);
             assertWellFormedXml(contentHpf);
+            assertEveryHwpxParagraphHasLineSegments(sectionXml);
             assertThat(sectionXml)
                     .contains("<hp:tbl")
                     .contains("<hp:lineBreak/>")
@@ -298,9 +305,42 @@ class DocumentConverterServiceTest {
     }
 
     private void assertWellFormedXml(String xml) throws Exception {
+        parseXml(xml);
+    }
+
+    private void assertEveryHwpxParagraphHasLineSegments(String xml) throws Exception {
+        Document document = parseXml(xml);
+        NodeList paragraphs = document.getElementsByTagNameNS(HP_NS, "p");
+        assertThat(paragraphs.getLength()).isPositive();
+        for (int i = 0; i < paragraphs.getLength(); i++) {
+            Element paragraph = (Element) paragraphs.item(i);
+            Element lineSegArray = directChild(paragraph, "linesegarray");
+            assertThat(lineSegArray)
+                    .as("section0 paragraph %s has linesegarray", i)
+                    .isNotNull();
+            assertThat(directChild(lineSegArray, "lineseg"))
+                    .as("section0 paragraph %s has at least one lineseg", i)
+                    .isNotNull();
+        }
+    }
+
+    private Document parseXml(String xml) throws Exception {
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
         factory.setNamespaceAware(true);
-        factory.newDocumentBuilder().parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+        return factory.newDocumentBuilder().parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private Element directChild(Element parent, String localName) {
+        NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node child = children.item(i);
+            if (child.getNodeType() == Node.ELEMENT_NODE
+                    && HP_NS.equals(child.getNamespaceURI())
+                    && localName.equals(child.getLocalName())) {
+                return (Element) child;
+            }
+        }
+        return null;
     }
 
     private boolean zipHasEntry(byte[] zipBytes, String entryName) throws IOException {

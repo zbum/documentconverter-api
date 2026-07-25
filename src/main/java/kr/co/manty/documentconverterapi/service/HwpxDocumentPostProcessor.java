@@ -1,10 +1,19 @@
 package kr.co.manty.documentconverterapi.service;
 
 import javax.imageio.ImageIO;
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.OutputKeys;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.StringReader;
+import java.io.StringWriter;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -25,12 +34,21 @@ import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.InputSource;
 
 final class HwpxDocumentPostProcessor {
 
+    private static final String HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph";
+    private static final String NORMAL_LINE_SEGMENT_FLAGS = "2147876864";
+    private static final String OBJECT_LINE_SEGMENT_FLAGS = "393216";
     private static final String CODE_LINE_BREAK_MARKER = "\u241E";
     private static final int DEFAULT_BODY_WIDTH = 42520;
     private static final int DEFAULT_BODY_HEIGHT = 74268;
+    private static final int DEFAULT_LINE_HEIGHT = 1000;
     private static final int IMAGE_FALLBACK_HEIGHT = millimetersToHwp(40.0);
     private static final long CODE_LINE_HEIGHT = 1105L;
     private static final long CODE_TABLE_VERTICAL_PADDING = 720L;
@@ -76,6 +94,7 @@ final class HwpxDocumentPostProcessor {
             sectionXml = normalizeCodeTables(sectionXml);
             sectionXml = replaceMarkdownImageMarkers(sectionXml, state);
             sectionXml = normalizeListParagraphs(sectionXml, state.bulletParaPrId());
+            sectionXml = addLineSegments(sectionXml);
             entries.put(entry.getKey(), xmlBytes(sectionXml));
         }
 
@@ -485,6 +504,294 @@ final class HwpxDocumentPostProcessor {
         }
         matcher.appendTail(buffer);
         return buffer.toString();
+    }
+
+    private static String addLineSegments(String sectionXml) throws IOException {
+        try {
+            Document document = parseXml(sectionXml);
+            NodeList paragraphs = document.getElementsByTagNameNS(HP_NS, "p");
+            for (int i = 0; i < paragraphs.getLength(); i++) {
+                Element paragraph = (Element) paragraphs.item(i);
+                Element lineSegArray = directChild(paragraph, HP_NS, "linesegarray");
+                if (lineSegArray != null && directChild(lineSegArray, HP_NS, "lineseg") != null) {
+                    continue;
+                }
+                applyLineSegments(document, paragraph, lineSegArray);
+            }
+            return serializeXml(document);
+        } catch (Exception e) {
+            throw new IOException("Failed to add HWPX line segments", e);
+        }
+    }
+
+    private static Document parseXml(String xml) throws Exception {
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(true);
+        factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        return factory.newDocumentBuilder().parse(new InputSource(new StringReader(xml)));
+    }
+
+    private static String serializeXml(Document document) throws Exception {
+        TransformerFactory transformerFactory = TransformerFactory.newInstance();
+        transformerFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+        Transformer transformer = transformerFactory.newTransformer();
+        transformer.setOutputProperty(OutputKeys.ENCODING, StandardCharsets.UTF_8.name());
+        transformer.setOutputProperty(OutputKeys.STANDALONE, "yes");
+        transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "no");
+        StringWriter writer = new StringWriter();
+        transformer.transform(new DOMSource(document), new StreamResult(writer));
+        return writer.toString();
+    }
+
+    private static void applyLineSegments(Document document, Element paragraph, Element existingLineSegArray) {
+        Element lineSegArray = existingLineSegArray != null
+                ? existingLineSegArray
+                : document.createElementNS(HP_NS, "hp:linesegarray");
+        while (lineSegArray.hasChildNodes()) {
+            lineSegArray.removeChild(lineSegArray.getFirstChild());
+        }
+        if (existingLineSegArray == null) {
+            paragraph.appendChild(lineSegArray);
+        }
+
+        String text = directParagraphText(paragraph);
+        int objectHeight = directObjectHeight(paragraph);
+        int lineHeight = Math.max(DEFAULT_LINE_HEIGHT, objectHeight);
+        int lineAdvance = objectHeight > DEFAULT_LINE_HEIGHT ? lineHeight : lineAdvance(lineHeight);
+        int lineWidth = lineWidth(paragraph);
+        List<Integer> starts = objectHeight > 0 && text.isBlank()
+                ? List.of(0)
+                : lineStarts(text, lineWidth, DEFAULT_LINE_HEIGHT);
+
+        int verticalPosition = 0;
+        for (int start : starts) {
+            Element lineSeg = document.createElementNS(HP_NS, "hp:lineseg");
+            lineSeg.setAttribute("textpos", String.valueOf(start));
+            lineSeg.setAttribute("vertpos", String.valueOf(verticalPosition));
+            lineSeg.setAttribute("vertsize", String.valueOf(lineHeight));
+            lineSeg.setAttribute("textheight", String.valueOf(lineHeight));
+            lineSeg.setAttribute("baseline", String.valueOf((int) Math.round(lineHeight * 0.85)));
+            lineSeg.setAttribute("spacing", String.valueOf(Math.max(0, lineAdvance - lineHeight)));
+            lineSeg.setAttribute("horzpos", "0");
+            lineSeg.setAttribute("horzsize", String.valueOf(lineWidth));
+            lineSeg.setAttribute("flags", objectHeight > 0 && text.isBlank() ? OBJECT_LINE_SEGMENT_FLAGS : NORMAL_LINE_SEGMENT_FLAGS);
+            lineSegArray.appendChild(lineSeg);
+            verticalPosition += lineAdvance;
+        }
+    }
+
+    private static String directParagraphText(Element paragraph) {
+        StringBuilder text = new StringBuilder();
+        for (Element run : directChildren(paragraph, HP_NS, "run")) {
+            for (Element t : directChildren(run, HP_NS, "t")) {
+                appendTextContent(t, text);
+            }
+        }
+        return text.toString();
+    }
+
+    private static void appendTextContent(Node node, StringBuilder text) {
+        NodeList children = node.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node child = children.item(i);
+            if (child.getNodeType() == Node.TEXT_NODE || child.getNodeType() == Node.CDATA_SECTION_NODE) {
+                text.append(child.getNodeValue());
+            } else if (isElement(child, HP_NS, "lineBreak")) {
+                text.append('\n');
+            }
+        }
+    }
+
+    private static int directObjectHeight(Element paragraph) {
+        int height = 0;
+        for (Element run : directChildren(paragraph, HP_NS, "run")) {
+            for (Element table : directChildren(run, HP_NS, "tbl")) {
+                height = Math.max(height, elementHeight(table));
+            }
+            for (Element picture : directChildren(run, HP_NS, "pic")) {
+                height = Math.max(height, elementHeight(picture));
+            }
+        }
+        return height;
+    }
+
+    private static int elementHeight(Element object) {
+        Element size = directChild(object, HP_NS, "sz");
+        if (size != null) {
+            int height = positiveIntAttribute(size, "height");
+            if (height > 0) {
+                return height;
+            }
+        }
+        Element currentSize = directChild(object, HP_NS, "curSz");
+        if (currentSize != null) {
+            int height = positiveIntAttribute(currentSize, "height");
+            if (height > 0) {
+                return height;
+            }
+        }
+        return 0;
+    }
+
+    private static int lineWidth(Element paragraph) {
+        Element tableCell = nearestAncestor(paragraph, HP_NS, "tc");
+        if (tableCell == null) {
+            return DEFAULT_BODY_WIDTH;
+        }
+
+        int width = DEFAULT_BODY_WIDTH;
+        Element cellSize = directChild(tableCell, HP_NS, "cellSz");
+        if (cellSize != null) {
+            width = positiveIntAttribute(cellSize, "width", DEFAULT_BODY_WIDTH);
+        }
+
+        Element cellMargin = directChild(tableCell, HP_NS, "cellMargin");
+        if (cellMargin != null) {
+            width -= positiveIntAttribute(cellMargin, "left");
+            width -= positiveIntAttribute(cellMargin, "right");
+        }
+        return Math.max(1000, width);
+    }
+
+    private static List<Integer> lineStarts(String text, int bodyWidth, int lineHeight) {
+        List<Integer> starts = new ArrayList<>();
+        int offset = 0;
+        String[] explicitLines = text.split("\n", -1);
+        for (String explicitLine : explicitLines) {
+            starts.addAll(wrappedLineStarts(explicitLine, offset, bodyWidth, lineHeight));
+            offset += explicitLine.length() + 1;
+        }
+        if (starts.isEmpty()) {
+            starts.add(0);
+        }
+        return starts;
+    }
+
+    private static List<Integer> wrappedLineStarts(String line, int offset, int bodyWidth, int lineHeight) {
+        List<Integer> starts = new ArrayList<>();
+        starts.add(offset);
+        if (line.isBlank()) {
+            return starts;
+        }
+
+        int lineStart = 0;
+        int lastBreakable = -1;
+        double currentWidth = 0;
+        double maxWidth = bodyWidth * 0.96;
+
+        for (int i = 0; i < line.length(); i++) {
+            char ch = line.charAt(i);
+            currentWidth += charWidth(ch, lineHeight);
+            if (Character.isWhitespace(ch)) {
+                lastBreakable = i + 1;
+            }
+
+            if (currentWidth > maxWidth && i > lineStart) {
+                int nextLineStart = lastBreakable > lineStart ? lastBreakable : i;
+                while (nextLineStart < line.length() && Character.isWhitespace(line.charAt(nextLineStart))) {
+                    nextLineStart++;
+                }
+                if (nextLineStart > lineStart && nextLineStart < line.length()) {
+                    starts.add(offset + nextLineStart);
+                    lineStart = nextLineStart;
+                    lastBreakable = -1;
+                    currentWidth = textWidth(line, lineStart, i + 1, lineHeight);
+                }
+            }
+        }
+        return starts;
+    }
+
+    private static double textWidth(String text, int start, int end, int lineHeight) {
+        double width = 0;
+        for (int i = start; i < end; i++) {
+            width += charWidth(text.charAt(i), lineHeight);
+        }
+        return width;
+    }
+
+    private static double charWidth(char ch, int lineHeight) {
+        if (Character.isWhitespace(ch)) {
+            return lineHeight * 0.35;
+        }
+        if (ch < 128) {
+            return Character.isLetterOrDigit(ch) ? lineHeight * 0.56 : lineHeight * 0.45;
+        }
+        if (isCjk(ch)) {
+            return lineHeight;
+        }
+        return lineHeight * 0.8;
+    }
+
+    private static boolean isCjk(char ch) {
+        Character.UnicodeBlock block = Character.UnicodeBlock.of(ch);
+        return block == Character.UnicodeBlock.HANGUL_SYLLABLES
+                || block == Character.UnicodeBlock.HANGUL_JAMO
+                || block == Character.UnicodeBlock.HANGUL_COMPATIBILITY_JAMO
+                || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
+                || block == Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION
+                || block == Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS;
+    }
+
+    private static int lineAdvance(int lineHeight) {
+        return (int) Math.round(lineHeight * 1.6);
+    }
+
+    private static List<Element> directChildren(Element parent, String namespace, String localName) {
+        List<Element> children = new ArrayList<>();
+        NodeList nodeList = parent.getChildNodes();
+        for (int i = 0; i < nodeList.getLength(); i++) {
+            Node child = nodeList.item(i);
+            if (isElement(child, namespace, localName)) {
+                children.add((Element) child);
+            }
+        }
+        return children;
+    }
+
+    private static Element directChild(Element parent, String namespace, String localName) {
+        NodeList nodeList = parent.getChildNodes();
+        for (int i = 0; i < nodeList.getLength(); i++) {
+            Node child = nodeList.item(i);
+            if (isElement(child, namespace, localName)) {
+                return (Element) child;
+            }
+        }
+        return null;
+    }
+
+    private static Element nearestAncestor(Node node, String namespace, String localName) {
+        Node current = node.getParentNode();
+        while (current != null) {
+            if (isElement(current, namespace, localName)) {
+                return (Element) current;
+            }
+            current = current.getParentNode();
+        }
+        return null;
+    }
+
+    private static boolean isElement(Node node, String namespace, String localName) {
+        return node.getNodeType() == Node.ELEMENT_NODE
+                && namespace.equals(node.getNamespaceURI())
+                && localName.equals(node.getLocalName());
+    }
+
+    private static int positiveIntAttribute(Element element, String name) {
+        return positiveIntAttribute(element, name, 0);
+    }
+
+    private static int positiveIntAttribute(Element element, String name, int fallback) {
+        String value = element.getAttribute(name);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Math.max(0, Integer.parseInt(value));
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     private static String setAttribute(String openTagPrefix, String attributeName, String value) {
