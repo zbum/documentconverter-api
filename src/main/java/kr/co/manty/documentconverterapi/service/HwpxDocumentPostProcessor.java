@@ -52,9 +52,9 @@ final class HwpxDocumentPostProcessor {
     private static final int HWPX_H1_HEIGHT = 1600;
     private static final int HWPX_H2_HEIGHT = 1400;
     private static final int HWPX_H3_HEIGHT = 1200;
-    private static final int HWPX_H1_TOP_SPACING = 900;
-    private static final int HWPX_H2_TOP_SPACING = 700;
-    private static final int HWPX_H3_TOP_SPACING = 500;
+    private static final int HWPX_H1_TOP_SPACING = 1800;
+    private static final int HWPX_H2_TOP_SPACING = 1500;
+    private static final int HWPX_H3_TOP_SPACING = 1200;
     private static final int IMAGE_FALLBACK_HEIGHT = millimetersToHwp(40.0);
     private static final long CODE_LINE_HEIGHT = 1105L;
     private static final int CODE_TABLE_CELL_MARGIN = millimetersToHwp(2.0);

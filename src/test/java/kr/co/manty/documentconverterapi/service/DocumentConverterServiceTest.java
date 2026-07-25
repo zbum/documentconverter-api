@@ -44,6 +44,7 @@ class DocumentConverterServiceTest {
     @Test
     void markdownToHwpAppliesDistinctHeadingStyles() throws Exception {
         byte[] hwpBytes = service.markdownToHwp("""
+                도입 문단
                 # 제목 1
                 ## 제목 2
                 ### 제목 3
@@ -58,11 +59,12 @@ class DocumentConverterServiceTest {
             List<Paragraph> paragraphs = Arrays.stream(hwpFile.getBodyText().getSectionList().getFirst().getParagraphs())
                     .filter(paragraph -> !normalString(paragraph).isBlank())
                     .toList();
-            assertThat(paragraphs).hasSizeGreaterThanOrEqualTo(4);
-            assertThat(charShapeId(paragraphs.get(0))).isEqualTo(0);
-            assertThat(charShapeId(paragraphs.get(1))).isEqualTo(1);
-            assertThat(charShapeId(paragraphs.get(2))).isEqualTo(2);
-            assertThat(charShapeId(paragraphs.get(3))).isEqualTo(5);
+            assertThat(paragraphs).hasSizeGreaterThanOrEqualTo(5);
+            assertThat(charShapeId(paragraphs.get(0))).isEqualTo(5);
+            assertThat(charShapeId(paragraphs.get(1))).isEqualTo(0);
+            assertThat(charShapeId(paragraphs.get(2))).isEqualTo(1);
+            assertThat(charShapeId(paragraphs.get(3))).isEqualTo(2);
+            assertThat(charShapeId(paragraphs.get(4))).isEqualTo(5);
 
             List<CharShape> charShapes = hwpFile.getDocInfo().getCharShapeList();
             assertThat(charShapes.get(0).getBaseSize()).isGreaterThan(charShapes.get(1).getBaseSize());
@@ -72,9 +74,11 @@ class DocumentConverterServiceTest {
             assertThat(charShapes.get(1).getProperty().isBold()).isTrue();
             assertThat(charShapes.get(2).getProperty().isBold()).isTrue();
             assertThat(firstLineVerticalPosition(paragraphs.get(1)) - paragraphBottom(paragraphs.get(0)))
-                    .isGreaterThanOrEqualTo(700);
+                    .isGreaterThanOrEqualTo(1800);
             assertThat(firstLineVerticalPosition(paragraphs.get(2)) - paragraphBottom(paragraphs.get(1)))
-                    .isGreaterThanOrEqualTo(500);
+                    .isGreaterThanOrEqualTo(1500);
+            assertThat(firstLineVerticalPosition(paragraphs.get(3)) - paragraphBottom(paragraphs.get(2)))
+                    .isGreaterThanOrEqualTo(1200);
             assertThat(paragraphs).allSatisfy(paragraph -> {
                 assertThat(paragraph.getHeader().getDivideSort().getValue()).isZero();
                 assertThat(paragraph.getLineSeg()).isNotNull();
@@ -198,6 +202,7 @@ class DocumentConverterServiceTest {
             ImageIO.write(image, "png", imagePath.toFile());
 
             byte[] hwpxBytes = service.markdownToHwpx("""
+                    도입 문단
                     # 제목
                     ## 부제
                     ### 소제목
@@ -226,8 +231,9 @@ class DocumentConverterServiceTest {
             assertHwpxHeadingStyle(sectionXml, headerXml, "제목", 1600);
             assertHwpxHeadingStyle(sectionXml, headerXml, "부제", 1400);
             assertHwpxHeadingStyle(sectionXml, headerXml, "소제목", 1200);
-            assertHwpxHeadingTopSpacing(sectionXml, "제목", "부제", 700);
-            assertHwpxHeadingTopSpacing(sectionXml, "부제", "소제목", 500);
+            assertHwpxHeadingTopSpacing(sectionXml, "도입 문단", "제목", 1800);
+            assertHwpxHeadingTopSpacing(sectionXml, "제목", "부제", 1500);
+            assertHwpxHeadingTopSpacing(sectionXml, "부제", "소제목", 1200);
             assertThat(sectionXml)
                     .contains("<hp:tbl")
                     .contains("<hp:lineBreak/>")

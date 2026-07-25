@@ -210,7 +210,8 @@ documentconverter-api/
 │       │   └── service/
 │       │       ├── DocumentConverterService.java
 │       │       ├── MarkdownDocumentPreProcessor.java
-│       │       └── HwpDocumentPostProcessor.java
+│       │       ├── HwpDocumentPostProcessor.java
+│       │       └── HwpxDocumentPostProcessor.java
 │       └── resources/
 │           └── application.properties
 ├── k8s/

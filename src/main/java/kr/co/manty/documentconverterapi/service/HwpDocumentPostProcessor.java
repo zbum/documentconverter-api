@@ -68,9 +68,9 @@ final class HwpDocumentPostProcessor {
     private static final int H2_CHAR_SHAPE_ID = 1;
     private static final int H3_CHAR_SHAPE_ID = 2;
     private static final int DEFAULT_CHAR_SHAPE_ID = 5;
-    private static final int H1_TOP_SPACING = 900;
-    private static final int H2_TOP_SPACING = 700;
-    private static final int H3_TOP_SPACING = 500;
+    private static final int H1_TOP_SPACING = 1800;
+    private static final int H2_TOP_SPACING = 1500;
+    private static final int H3_TOP_SPACING = 1200;
     private static final int DEFAULT_BODY_WIDTH = 42520;
     private static final int DEFAULT_BODY_HEIGHT = 74268;
     private static final int CODE_TABLE_CELL_MARGIN = millimetersToHwp(2.0);
