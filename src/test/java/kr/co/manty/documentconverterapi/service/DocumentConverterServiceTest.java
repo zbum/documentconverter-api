@@ -24,6 +24,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import org.w3c.dom.Document;
@@ -217,6 +219,7 @@ class DocumentConverterServiceTest {
                     .contains("<hp:tbl")
                     .contains("<hp:lineBreak/>")
                     .doesNotContain("\u241E");
+            assertHwpxCodeBlockTableIsStyled(sectionXml, headerXml);
             assertThat(headerXml)
                     .contains("<hh:bullets")
                     .contains("type=\"BULLET\"");
@@ -341,6 +344,52 @@ class DocumentConverterServiceTest {
             }
         }
         return null;
+    }
+
+    private void assertHwpxCodeBlockTableIsStyled(String sectionXml, String headerXml) {
+        String codeBorderFillId = codeBorderFillId(headerXml);
+        String tableXml = firstMatch(sectionXml, "<hp:tbl\\b.*?</hp:tbl>");
+
+        assertThat(tableXml)
+                .contains("borderFillIDRef=\"" + codeBorderFillId + "\"")
+                .doesNotContain("\u241E");
+        assertThat(headerXml)
+                .contains("id=\"" + codeBorderFillId + "\"")
+                .contains("color=\"#D0D7DE\"")
+                .contains("faceColor=\"#F6F8FA\"");
+        assertThat(longAttribute(tableXml, "hp:sz", "height")).isGreaterThan(6500L);
+        assertThat(longAttribute(tableXml, "hp:cellSz", "height")).isGreaterThan(6500L);
+        assertThat(longAttribute(tableXml, "hp:cellMargin", "left")).isGreaterThan(500L);
+        assertThat(longAttribute(tableXml, "hp:cellMargin", "right")).isGreaterThan(500L);
+        assertThat(longAttribute(tableXml, "hp:cellMargin", "top")).isGreaterThan(500L);
+        assertThat(longAttribute(tableXml, "hp:cellMargin", "bottom")).isGreaterThan(500L);
+        assertThat(countMatches(tableXml, "<hp:lineseg\\b")).isGreaterThanOrEqualTo(4);
+    }
+
+    private String codeBorderFillId(String headerXml) {
+        Matcher matcher = Pattern.compile(
+                "<hh:borderFill\\s+id=\"(\\d+)\"[^>]*>(?:(?!</hh:borderFill>).)*faceColor=\"#F6F8FA\"(?:(?!</hh:borderFill>).)*</hh:borderFill>",
+                Pattern.DOTALL
+        ).matcher(headerXml);
+        assertThat(matcher.find()).isTrue();
+        return matcher.group(1);
+    }
+
+    private String firstMatch(String text, String regex) {
+        Matcher matcher = Pattern.compile(regex, Pattern.DOTALL).matcher(text);
+        assertThat(matcher.find()).isTrue();
+        return matcher.group();
+    }
+
+    private long longAttribute(String xml, String elementName, String attributeName) {
+        Matcher matcher = Pattern.compile("<\\Q" + elementName + "\\E\\b[^>]*\\b\\Q" + attributeName + "\\E=\"(\\d+)\"")
+                .matcher(xml);
+        assertThat(matcher.find()).isTrue();
+        return Long.parseLong(matcher.group(1));
+    }
+
+    private long countMatches(String text, String regex) {
+        return Pattern.compile(regex).matcher(text).results().count();
     }
 
     private boolean zipHasEntry(byte[] zipBytes, String entryName) throws IOException {
