@@ -71,6 +71,10 @@ class DocumentConverterServiceTest {
             assertThat(charShapes.get(0).getProperty().isBold()).isTrue();
             assertThat(charShapes.get(1).getProperty().isBold()).isTrue();
             assertThat(charShapes.get(2).getProperty().isBold()).isTrue();
+            assertThat(firstLineVerticalPosition(paragraphs.get(1)) - paragraphBottom(paragraphs.get(0)))
+                    .isGreaterThanOrEqualTo(700);
+            assertThat(firstLineVerticalPosition(paragraphs.get(2)) - paragraphBottom(paragraphs.get(1)))
+                    .isGreaterThanOrEqualTo(500);
             assertThat(paragraphs).allSatisfy(paragraph -> {
                 assertThat(paragraph.getHeader().getDivideSort().getValue()).isZero();
                 assertThat(paragraph.getLineSeg()).isNotNull();
@@ -222,6 +226,8 @@ class DocumentConverterServiceTest {
             assertHwpxHeadingStyle(sectionXml, headerXml, "제목", 1600);
             assertHwpxHeadingStyle(sectionXml, headerXml, "부제", 1400);
             assertHwpxHeadingStyle(sectionXml, headerXml, "소제목", 1200);
+            assertHwpxHeadingTopSpacing(sectionXml, "제목", "부제", 700);
+            assertHwpxHeadingTopSpacing(sectionXml, "부제", "소제목", 500);
             assertThat(sectionXml)
                     .contains("<hp:tbl")
                     .contains("<hp:lineBreak/>")
@@ -231,7 +237,8 @@ class DocumentConverterServiceTest {
             assertThat(headerXml)
                     .contains("<hh:bullets")
                     .contains("type=\"BULLET\"")
-                    .contains("char=\"•\"");
+                    .contains("char=\"•\"")
+                    .contains("<hh:align horizontal=\"LEFT\" vertical=\"BASELINE\"/><hh:heading type=\"BULLET\"");
             assertThat(sectionXml)
                     .contains("첫 항목")
                     .contains("둘째 항목")
@@ -254,6 +261,26 @@ class DocumentConverterServiceTest {
         }
     }
 
+    @Test
+    void markdownToHwpxAddsLineSegmentsForBorderlineBulletAndCodeParagraphs() throws Exception {
+        byte[] hwpxBytes = service.markdownToHwpx("""
+                ## NFS 설정
+
+                * 이렇게 설치된 nfs server 를 설정하자. 먼저 파일이 저장될 디렉토리를 하나 만든다.
+                * 자동으로 nfs-client 라는 storageClass 가 만들어 졌다.
+
+                ```
+                /nas 192.168.31.0/24(rw,sync,no_subtree_check)
+                ```
+                """);
+
+        String sectionXml = zipEntryText(hwpxBytes, "Contents/section0.xml");
+
+        assertHwpxParagraphLineSegmentCount(sectionXml, "이렇게 설치된 nfs server 를 설정하자. 먼저 파일이 저장될 디렉토리를 하나 만든다.", 2);
+        assertHwpxParagraphLineSegmentCount(sectionXml, "자동으로 nfs-client 라는 storageClass 가 만들어 졌다.", 2);
+        assertHwpxParagraphLineSegmentCount(sectionXml, "/nas 192.168.31.0/24(rw,sync,no_subtree_check)", 2);
+    }
+
     private long charShapeId(Paragraph paragraph) {
         return paragraph.getCharShape().getPositonShapeIdPairList().getFirst().getShapeId();
     }
@@ -274,6 +301,18 @@ class DocumentConverterServiceTest {
                 .map(Control::getClass)
                 .map(Class::getSimpleName)
                 .toList();
+    }
+
+    private int firstLineVerticalPosition(Paragraph paragraph) {
+        return paragraph.getLineSeg().getLineSegItemList().getFirst().getLineVerticalPosition();
+    }
+
+    private int paragraphBottom(Paragraph paragraph) {
+        var lineSegments = paragraph.getLineSeg().getLineSegItemList();
+        var lastLineSegment = lineSegments.getLast();
+        return lastLineSegment.getLineVerticalPosition()
+                + lastLineSegment.getLineHeight()
+                + lastLineSegment.getLineSpace();
     }
 
     private ControlTable firstControlTable(HWPFile hwpFile) {
@@ -373,6 +412,41 @@ class DocumentConverterServiceTest {
         assertThat(lineSeg.getAttribute("textheight")).isEqualTo(String.valueOf(height));
     }
 
+    private void assertHwpxHeadingTopSpacing(
+            String sectionXml,
+            String previousText,
+            String headingText,
+            int minimumTopSpacing
+    ) throws Exception {
+        Document document = parseXml(sectionXml);
+        Element previousParagraph = paragraphByText(document, previousText);
+        Element headingParagraph = paragraphByText(document, headingText);
+
+        assertThat(hwpxFirstLineVerticalPosition(headingParagraph) - hwpxParagraphBottom(previousParagraph))
+                .isGreaterThanOrEqualTo(minimumTopSpacing);
+    }
+
+    private int hwpxFirstLineVerticalPosition(Element paragraph) {
+        Element lineSegArray = directChild(paragraph, "linesegarray");
+        assertThat(lineSegArray).isNotNull();
+        return intAttribute(directChildren(lineSegArray, "lineseg").getFirst(), "vertpos");
+    }
+
+    private int hwpxParagraphBottom(Element paragraph) {
+        Element lineSegArray = directChild(paragraph, "linesegarray");
+        assertThat(lineSegArray).isNotNull();
+        List<Element> lineSegments = directChildren(lineSegArray, "lineseg");
+        Element lastLineSegment = lineSegments.getLast();
+        return intAttribute(lastLineSegment, "vertpos")
+                + intAttribute(lastLineSegment, "textheight")
+                + intAttribute(lastLineSegment, "spacing");
+    }
+
+    private int intAttribute(Element element, String name) {
+        assertThat(element.hasAttribute(name)).isTrue();
+        return Integer.parseInt(element.getAttribute(name));
+    }
+
     private Element paragraphByText(Document document, String text) {
         NodeList paragraphs = document.getElementsByTagNameNS(HP_NS, "p");
         for (int i = 0; i < paragraphs.getLength(); i++) {
@@ -407,6 +481,27 @@ class DocumentConverterServiceTest {
             }
         }
         return text.toString();
+    }
+
+    private void assertHwpxParagraphLineSegmentCount(String sectionXml, String text, int minimumCount) throws Exception {
+        Element paragraph = paragraphByText(parseXml(sectionXml), text);
+        Element lineSegArray = directChild(paragraph, "linesegarray");
+        assertThat(lineSegArray).isNotNull();
+        assertThat(directChildren(lineSegArray, "lineseg")).hasSizeGreaterThanOrEqualTo(minimumCount);
+    }
+
+    private List<Element> directChildren(Element parent, String localName) {
+        List<Element> children = new ArrayList<>();
+        NodeList nodeList = parent.getChildNodes();
+        for (int i = 0; i < nodeList.getLength(); i++) {
+            Node child = nodeList.item(i);
+            if (child.getNodeType() == Node.ELEMENT_NODE
+                    && HP_NS.equals(child.getNamespaceURI())
+                    && localName.equals(child.getLocalName())) {
+                children.add((Element) child);
+            }
+        }
+        return children;
     }
 
     private void assertHwpxCodeBlockTableIsStyled(String sectionXml, String headerXml) {

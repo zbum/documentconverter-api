@@ -68,6 +68,9 @@ final class HwpDocumentPostProcessor {
     private static final int H2_CHAR_SHAPE_ID = 1;
     private static final int H3_CHAR_SHAPE_ID = 2;
     private static final int DEFAULT_CHAR_SHAPE_ID = 5;
+    private static final int H1_TOP_SPACING = 900;
+    private static final int H2_TOP_SPACING = 700;
+    private static final int H3_TOP_SPACING = 500;
     private static final int DEFAULT_BODY_WIDTH = 42520;
     private static final int DEFAULT_BODY_HEIGHT = 74268;
     private static final int CODE_TABLE_CELL_MARGIN = millimetersToHwp(2.0);
@@ -863,6 +866,7 @@ final class HwpDocumentPostProcessor {
         for (Section section : hwpFile.getBodyText().getSectionList()) {
             PageMetrics pageMetrics = pageMetrics(section);
             int verticalPosition = 0;
+            boolean seenVisibleContent = false;
 
             for (Paragraph paragraph : section) {
                 int charShapeId = firstCharShapeId(paragraph);
@@ -874,8 +878,15 @@ final class HwpDocumentPostProcessor {
                         : lineStarts(paragraphText(paragraph), pageMetrics.bodyWidth(), lineHeight);
 
                 int paragraphHeight = lineStarts.size() * lineAdvance;
-                if (verticalPosition > 0 && verticalPosition + paragraphHeight > pageMetrics.bodyHeight()) {
+                int topSpacing = verticalPosition > 0 && seenVisibleContent
+                        ? headingTopSpacing(charShapeId)
+                        : 0;
+                if (verticalPosition > 0 && verticalPosition + topSpacing + paragraphHeight > pageMetrics.bodyHeight()) {
                     verticalPosition = 0;
+                    topSpacing = 0;
+                }
+                if (verticalPosition > 0 && topSpacing > 0) {
+                    verticalPosition += topSpacing;
                 }
 
                 paragraph.createLineSeg();
@@ -888,8 +899,30 @@ final class HwpDocumentPostProcessor {
                     verticalPosition += lineAdvance;
                 }
                 paragraph.getHeader().setLineAlignCount(paragraph.getLineSeg().getLineSegItemList().size());
+                seenVisibleContent = seenVisibleContent || paragraphHasVisibleContent(paragraph);
             }
         }
+    }
+
+    private static int headingTopSpacing(int charShapeId) {
+        return switch (charShapeId) {
+            case H1_CHAR_SHAPE_ID -> H1_TOP_SPACING;
+            case H2_CHAR_SHAPE_ID -> H2_TOP_SPACING;
+            case H3_CHAR_SHAPE_ID -> H3_TOP_SPACING;
+            default -> 0;
+        };
+    }
+
+    private static boolean paragraphHasVisibleContent(Paragraph paragraph) {
+        if (!paragraphText(paragraph).isBlank()) {
+            return true;
+        }
+        if (paragraph.getControlList() == null) {
+            return false;
+        }
+        return paragraph.getControlList().stream()
+                .anyMatch(control -> !(control instanceof ControlSectionDefine)
+                        && !control.getClass().getSimpleName().equals("ControlColumnDefine"));
     }
 
     private static int pictureControlHeight(Paragraph paragraph) {

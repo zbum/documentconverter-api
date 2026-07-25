@@ -52,10 +52,16 @@ final class HwpxDocumentPostProcessor {
     private static final int HWPX_H1_HEIGHT = 1600;
     private static final int HWPX_H2_HEIGHT = 1400;
     private static final int HWPX_H3_HEIGHT = 1200;
+    private static final int HWPX_H1_TOP_SPACING = 900;
+    private static final int HWPX_H2_TOP_SPACING = 700;
+    private static final int HWPX_H3_TOP_SPACING = 500;
     private static final int IMAGE_FALLBACK_HEIGHT = millimetersToHwp(40.0);
     private static final long CODE_LINE_HEIGHT = 1105L;
     private static final int CODE_TABLE_CELL_MARGIN = millimetersToHwp(2.0);
     private static final long CODE_TABLE_MIN_HEIGHT = millimetersToHwp(7.0);
+    private static final int BULLET_TEXT_WIDTH_RESERVE = 2200;
+    private static final double LINE_WIDTH_SAFETY_FACTOR = 0.96;
+    private static final double REFLOW_GUARD_LINE_WIDTH_SAFETY_FACTOR = 0.88;
     private static final Pattern SECTION_XML_ENTRY = Pattern.compile("Contents/section\\d+\\.xml");
     private static final Pattern TEXT_ELEMENT = Pattern.compile("<hp:t>(.*?)</hp:t>", Pattern.DOTALL);
     private static final Pattern TABLE_ELEMENT = Pattern.compile("<hp:tbl\\b.*?</hp:tbl>", Pattern.DOTALL);
@@ -110,7 +116,7 @@ final class HwpxDocumentPostProcessor {
             sectionXml = replaceMarkdownImageMarkers(sectionXml, state);
             sectionXml = normalizeListParagraphs(sectionXml, state.bulletParaPrId());
             sectionXml = normalizeHeadingParagraphs(sectionXml, state.headingStyles());
-            sectionXml = addLineSegments(sectionXml, state.headingStyles());
+            sectionXml = addLineSegments(sectionXml, state.headingStyles(), state.bulletParaPrId());
             entries.put(entry.getKey(), xmlBytes(sectionXml));
         }
 
@@ -250,7 +256,7 @@ final class HwpxDocumentPostProcessor {
 
     private static String insertBulletParaPr(String headerXml, int bulletParaPrId, int bulletId) {
         String bulletParaPr = """
-                <hh:paraPr id="%d" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0"><hh:align horizontal="JUSTIFY" vertical="BASELINE"/><hh:heading type="BULLET" idRef="%d" level="0"/><hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/><hp:switch><hp:case hp:required-namespace="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar"><hh:margin><hc:intent value="-350" unit="HWPUNIT"/><hc:left value="1100" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="45" unit="HWPUNIT"/></hh:margin><hh:lineSpacing type="PERCENT" value="155" unit="HWPUNIT"/></hp:case><hp:default><hh:margin><hc:intent value="-700" unit="HWPUNIT"/><hc:left value="2200" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="90" unit="HWPUNIT"/></hh:margin><hh:lineSpacing type="PERCENT" value="155" unit="HWPUNIT"/></hp:default></hp:switch><hh:autoSpacing eAsianEng="0" eAsianNum="0"/><hh:border borderFillIDRef="2" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/></hh:paraPr>"""
+                <hh:paraPr id="%d" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="1" suppressLineNumbers="0" checked="0"><hh:align horizontal="LEFT" vertical="BASELINE"/><hh:heading type="BULLET" idRef="%d" level="0"/><hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/><hp:switch><hp:case hp:required-namespace="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar"><hh:margin><hc:intent value="-350" unit="HWPUNIT"/><hc:left value="1100" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="45" unit="HWPUNIT"/></hh:margin><hh:lineSpacing type="PERCENT" value="155" unit="HWPUNIT"/></hp:case><hp:default><hh:margin><hc:intent value="-700" unit="HWPUNIT"/><hc:left value="2200" unit="HWPUNIT"/><hc:right value="0" unit="HWPUNIT"/><hc:prev value="0" unit="HWPUNIT"/><hc:next value="90" unit="HWPUNIT"/></hh:margin><hh:lineSpacing type="PERCENT" value="155" unit="HWPUNIT"/></hp:default></hp:switch><hh:autoSpacing eAsianEng="0" eAsianNum="0"/><hh:border borderFillIDRef="2" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/></hh:paraPr>"""
                 .formatted(bulletParaPrId, bulletId);
 
         Matcher matcher = PARA_PROPERTIES_OPEN.matcher(headerXml);
@@ -722,11 +728,15 @@ final class HwpxDocumentPostProcessor {
         }
     }
 
-    private static String addLineSegments(String sectionXml, Map<Integer, HeadingStyle> headingStyles) throws IOException {
+    private static String addLineSegments(
+            String sectionXml,
+            Map<Integer, HeadingStyle> headingStyles,
+            int bulletParaPrId
+    ) throws IOException {
         try {
             Document document = parseXml(sectionXml);
             applyTableCellLineSegments(document);
-            applySectionLineSegments(document, headingStyles);
+            applySectionLineSegments(document, headingStyles, bulletParaPrId);
             return serializeXml(document);
         } catch (Exception e) {
             throw new IOException("Failed to add HWPX line segments", e);
@@ -776,20 +786,33 @@ final class HwpxDocumentPostProcessor {
         }
     }
 
-    private static void applySectionLineSegments(Document document, Map<Integer, HeadingStyle> headingStyles) {
+    private static void applySectionLineSegments(
+            Document document,
+            Map<Integer, HeadingStyle> headingStyles,
+            int bulletParaPrId
+    ) {
         Element section = document.getDocumentElement();
         PageMetrics pageMetrics = pageMetrics(document);
         int verticalPosition = 0;
+        boolean seenVisibleContent = false;
 
         for (Element paragraph : directChildren(section, HP_NS, "p")) {
             LineSegmentPlan plan = lineSegmentPlan(
                     paragraph,
                     directChild(paragraph, HP_NS, "linesegarray"),
                     pageMetrics.bodyWidth(),
-                    headingStyles
+                    headingStyles,
+                    bulletParaPrId
             );
-            if (verticalPosition > 0 && verticalPosition + plan.height() > pageMetrics.bodyHeight()) {
+            int topSpacing = verticalPosition > 0 && seenVisibleContent
+                    ? paragraphHeadingTopSpacing(paragraph, headingStyles)
+                    : 0;
+            if (verticalPosition > 0 && verticalPosition + topSpacing + plan.height() > pageMetrics.bodyHeight()) {
                 verticalPosition = 0;
+                topSpacing = 0;
+            }
+            if (verticalPosition > 0 && topSpacing > 0) {
+                verticalPosition += topSpacing;
             }
             verticalPosition = applyLineSegments(
                     document,
@@ -797,11 +820,13 @@ final class HwpxDocumentPostProcessor {
                     directChild(paragraph, HP_NS, "linesegarray"),
                     verticalPosition,
                     pageMetrics.bodyWidth(),
-                    headingStyles
+                    headingStyles,
+                    bulletParaPrId
             );
             if (verticalPosition > pageMetrics.bodyHeight()) {
                 verticalPosition = 0;
             }
+            seenVisibleContent = seenVisibleContent || paragraphHasVisibleContent(paragraph);
         }
     }
 
@@ -813,7 +838,19 @@ final class HwpxDocumentPostProcessor {
             int paragraphWidth,
             Map<Integer, HeadingStyle> headingStyles
     ) {
-        LineSegmentPlan plan = lineSegmentPlan(paragraph, existingLineSegArray, paragraphWidth, headingStyles);
+        return applyLineSegments(document, paragraph, existingLineSegArray, verticalPosition, paragraphWidth, headingStyles, -1);
+    }
+
+    private static int applyLineSegments(
+            Document document,
+            Element paragraph,
+            Element existingLineSegArray,
+            int verticalPosition,
+            int paragraphWidth,
+            Map<Integer, HeadingStyle> headingStyles,
+            int bulletParaPrId
+    ) {
+        LineSegmentPlan plan = lineSegmentPlan(paragraph, existingLineSegArray, paragraphWidth, headingStyles, bulletParaPrId);
         Element lineSegArray = existingLineSegArray != null
                 ? existingLineSegArray
                 : document.createElementNS(HP_NS, "hp:linesegarray");
@@ -846,7 +883,8 @@ final class HwpxDocumentPostProcessor {
             Element paragraph,
             Element existingLineSegArray,
             int paragraphWidth,
-            Map<Integer, HeadingStyle> headingStyles
+            Map<Integer, HeadingStyle> headingStyles,
+            int bulletParaPrId
     ) {
         LineSegmentSeed seed = lineSegmentSeed(existingLineSegArray);
         int styledLineHeight = paragraphStyledLineHeight(paragraph, headingStyles);
@@ -858,12 +896,36 @@ final class HwpxDocumentPostProcessor {
         int objectHeight = directObjectHeight(paragraph);
         int lineHeight = Math.max(seed.lineHeight(), objectHeight);
         int lineAdvance = lineHeight + seed.spacing();
-        int lineWidth = lineWidth(paragraph, paragraphWidth);
+        int lineWidth = lineWidth(paragraph, paragraphWidth, bulletParaPrId);
         boolean objectOnly = objectHeight > 0 && text.isBlank();
         List<Integer> starts = objectOnly
                 ? List.of(0)
                 : lineStarts(text, lineWidth, lineHeight);
+        starts = guardedLineStarts(paragraph, text, lineWidth, lineHeight, bulletParaPrId, starts);
         return new LineSegmentPlan(starts, lineHeight, lineAdvance, lineWidth, objectOnly);
+    }
+
+    private static List<Integer> guardedLineStarts(
+            Element paragraph,
+            String text,
+            int lineWidth,
+            int lineHeight,
+            int bulletParaPrId,
+            List<Integer> starts
+    ) {
+        if (starts.size() != 1 || text.isBlank()) {
+            return starts;
+        }
+
+        boolean bulletParagraph = bulletParaPrId >= 0
+                && String.valueOf(bulletParaPrId).equals(paragraph.getAttribute("paraPrIDRef"));
+        boolean tableCellParagraph = nearestAncestor(paragraph, HP_NS, "tc") != null;
+        if (!bulletParagraph && !tableCellParagraph) {
+            return starts;
+        }
+
+        List<Integer> guardedStarts = lineStarts(text, lineWidth, lineHeight, true);
+        return guardedStarts.size() > starts.size() ? guardedStarts : starts;
     }
 
     private static int paragraphStyledLineHeight(Element paragraph, Map<Integer, HeadingStyle> headingStyles) {
@@ -881,6 +943,31 @@ final class HwpxDocumentPostProcessor {
             }
         }
         return lineHeight;
+    }
+
+    private static int paragraphHeadingTopSpacing(Element paragraph, Map<Integer, HeadingStyle> headingStyles) {
+        if (headingStyles.isEmpty()) {
+            return 0;
+        }
+
+        for (Element run : directChildren(paragraph, HP_NS, "run")) {
+            int charPrId = positiveIntAttribute(run, "charPrIDRef", -1);
+            for (Map.Entry<Integer, HeadingStyle> entry : headingStyles.entrySet()) {
+                if (entry.getValue().charPrId() == charPrId) {
+                    return headingTopSpacing(entry.getKey());
+                }
+            }
+        }
+        return 0;
+    }
+
+    private static int headingTopSpacing(int headingLevel) {
+        return switch (headingLevel) {
+            case 1 -> HWPX_H1_TOP_SPACING;
+            case 2 -> HWPX_H2_TOP_SPACING;
+            case 3 -> HWPX_H3_TOP_SPACING;
+            default -> 0;
+        };
     }
 
     private static LineSegmentSeed lineSegmentSeed(Element lineSegArray) {
@@ -933,6 +1020,10 @@ final class HwpxDocumentPostProcessor {
         return height;
     }
 
+    private static boolean paragraphHasVisibleContent(Element paragraph) {
+        return !directParagraphText(paragraph).isBlank() || directObjectHeight(paragraph) > 0;
+    }
+
     private static int elementHeight(Element object) {
         Element size = directChild(object, HP_NS, "sz");
         int height = 0;
@@ -952,8 +1043,15 @@ final class HwpxDocumentPostProcessor {
     }
 
     private static int lineWidth(Element paragraph, int defaultWidth) {
+        return lineWidth(paragraph, defaultWidth, -1);
+    }
+
+    private static int lineWidth(Element paragraph, int defaultWidth, int bulletParaPrId) {
         Element tableCell = nearestAncestor(paragraph, HP_NS, "tc");
         if (tableCell == null) {
+            if (bulletParaPrId >= 0 && String.valueOf(bulletParaPrId).equals(paragraph.getAttribute("paraPrIDRef"))) {
+                return Math.max(1000, defaultWidth - BULLET_TEXT_WIDTH_RESERVE);
+            }
             return defaultWidth;
         }
 
@@ -999,11 +1097,15 @@ final class HwpxDocumentPostProcessor {
     }
 
     private static List<Integer> lineStarts(String text, int bodyWidth, int lineHeight) {
+        return lineStarts(text, bodyWidth, lineHeight, false);
+    }
+
+    private static List<Integer> lineStarts(String text, int bodyWidth, int lineHeight, boolean reflowGuard) {
         List<Integer> starts = new ArrayList<>();
         int offset = 0;
         String[] explicitLines = text.split("\n", -1);
         for (String explicitLine : explicitLines) {
-            starts.addAll(wrappedLineStarts(explicitLine, offset, bodyWidth, lineHeight));
+            starts.addAll(wrappedLineStarts(explicitLine, offset, bodyWidth, lineHeight, reflowGuard));
             offset += explicitLine.length() + 1;
         }
         if (starts.isEmpty()) {
@@ -1013,6 +1115,16 @@ final class HwpxDocumentPostProcessor {
     }
 
     private static List<Integer> wrappedLineStarts(String line, int offset, int bodyWidth, int lineHeight) {
+        return wrappedLineStarts(line, offset, bodyWidth, lineHeight, false);
+    }
+
+    private static List<Integer> wrappedLineStarts(
+            String line,
+            int offset,
+            int bodyWidth,
+            int lineHeight,
+            boolean reflowGuard
+    ) {
         List<Integer> starts = new ArrayList<>();
         starts.add(offset);
         if (line.isBlank()) {
@@ -1022,12 +1134,12 @@ final class HwpxDocumentPostProcessor {
         int lineStart = 0;
         int lastBreakable = -1;
         double currentWidth = 0;
-        double maxWidth = bodyWidth * 0.96;
+        double maxWidth = bodyWidth * (reflowGuard ? REFLOW_GUARD_LINE_WIDTH_SAFETY_FACTOR : LINE_WIDTH_SAFETY_FACTOR);
 
         for (int i = 0; i < line.length(); i++) {
             char ch = line.charAt(i);
-            currentWidth += charWidth(ch, lineHeight);
-            if (Character.isWhitespace(ch)) {
+            currentWidth += charWidth(ch, lineHeight, reflowGuard);
+            if (isPreferredLineBreakCharacter(ch)) {
                 lastBreakable = i + 1;
             }
 
@@ -1040,7 +1152,7 @@ final class HwpxDocumentPostProcessor {
                     starts.add(offset + nextLineStart);
                     lineStart = nextLineStart;
                     lastBreakable = -1;
-                    currentWidth = textWidth(line, lineStart, i + 1, lineHeight);
+                    currentWidth = textWidth(line, lineStart, i + 1, lineHeight, reflowGuard);
                 }
             }
         }
@@ -1048,24 +1160,49 @@ final class HwpxDocumentPostProcessor {
     }
 
     private static double textWidth(String text, int start, int end, int lineHeight) {
+        return textWidth(text, start, end, lineHeight, false);
+    }
+
+    private static double textWidth(String text, int start, int end, int lineHeight, boolean reflowGuard) {
         double width = 0;
         for (int i = start; i < end; i++) {
-            width += charWidth(text.charAt(i), lineHeight);
+            width += charWidth(text.charAt(i), lineHeight, reflowGuard);
         }
         return width;
     }
 
     private static double charWidth(char ch, int lineHeight) {
+        return charWidth(ch, lineHeight, false);
+    }
+
+    private static double charWidth(char ch, int lineHeight, boolean reflowGuard) {
         if (Character.isWhitespace(ch)) {
-            return lineHeight * 0.35;
+            return lineHeight * (reflowGuard ? 0.50 : 0.35);
         }
         if (ch < 128) {
-            return Character.isLetterOrDigit(ch) ? lineHeight * 0.56 : lineHeight * 0.45;
+            return Character.isLetterOrDigit(ch)
+                    ? lineHeight * (reflowGuard ? 0.90 : 0.56)
+                    : lineHeight * (reflowGuard ? 0.75 : 0.45);
         }
         if (isCjk(ch)) {
-            return lineHeight;
+            return reflowGuard ? lineHeight * 1.35 : lineHeight;
         }
-        return lineHeight * 0.8;
+        return lineHeight * (reflowGuard ? 1.0 : 0.8);
+    }
+
+    private static boolean isPreferredLineBreakCharacter(char ch) {
+        return Character.isWhitespace(ch)
+                || ch == ','
+                || ch == ';'
+                || ch == ':'
+                || ch == '/'
+                || ch == '\\'
+                || ch == '-'
+                || ch == '_'
+                || ch == '.'
+                || ch == ')'
+                || ch == ']'
+                || ch == '}';
     }
 
     private static boolean isCjk(char ch) {
